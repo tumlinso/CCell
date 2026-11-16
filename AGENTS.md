@@ -1,10 +1,15 @@
-# Working on ccell
+# Working on CCell
 
-ccell owns a C++20 reference biology package. AnnData++ and Velocity++ are
-standalone dependencies included as Git submodules; preprocessing is local
-ccell source under src/preprocess. Dependencies live in external/. Cellerator is a downstream consumer and the home of FP16 and
-specialized device implementations. Do not add a Cellerator dependency to
-this reference package.
+CCell owns a C++20 reference biology package, its scientific methods, and
+biological data integration. AnnData++ is CCell's data and IO component,
+maintained as an independent Git submodule under src/io/anndatapp. Velocity++
+remains a standalone Git submodule under external/velocitypp; preprocessing is
+local CCell source under src/preprocess.
+
+Cellerator is a sibling computation substrate. CCell owns integration of its
+scientific methods with that substrate; future accelerated implementations may
+use it explicitly. Keep the standard computational reference independent of
+Cellerator. This checkout does not yet provide an acceleration component.
 
 Read [coding_style.md](coding_style.md) before numerical design, implementation,
 or review. It is binding authority: do not weaken, replace, move, or remove it,

@@ -11,7 +11,7 @@ if(CCELL_BUILD_TESTS)
   enable_testing()
 endif()
 
-add_subdirectory(external/anndatapp)
+add_subdirectory(src/io/anndatapp)
 add_subdirectory(src/preprocess)
 add_subdirectory(external/velocitypp)
 

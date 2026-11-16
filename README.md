@@ -1,4 +1,4 @@
-# ccell
+# CCell
 
 ccell is a C++20 numerical development reference for single-cell methods. It
 exposes calculations, arrays, pointers, layouts, working storage, and execution
@@ -7,12 +7,18 @@ provide inputs, outputs, preparation storage, intermediate buffers, and scratch.
 AnnData++ owns biological data and storage; callers acquire it explicitly before
 reference calculation. Caller threads own scheduling and synchronization.
 
+C++ started as C with Classes. CCell is Cell with Classes. Cellerator kept the
+acceleration; we got custody of the cells and the other C from “accelerator.”
+
 Consumers may replace a primitive, connected region, or complete algorithm with
 novel mathematics and representations. Compile-time templates and runtime typed
 function pointers support caller-defined state. Custom layouts can persist
 through an entire replacement region; conversion is required only where that
 region connects to retained code. Replacements may allocate explicitly.
-Cellerator is a downstream consumer, not a dependency of this package.
+CCell owns its scientific methods and biological data integration. Cellerator
+is a sibling computation substrate for future optional accelerated
+implementations owned by CCell. The standard computational reference remains
+independent of Cellerator; this package currently provides that reference path.
 
 Read the binding [coding style](coding_style.md) before numerical development.
 It extends Cellerator's compact numerical style with minimal scalar includes,
@@ -48,10 +54,13 @@ cmake --install build/debug --prefix /path/to/ccell-install
 
 Release, shared, and sanitizer presets are also provided. Storage backends are
 off in these presets; enable `ANNDATAPP_ENABLE_HDF5` or `ANNDATAPP_ENABLE_ZARR`
-explicitly when wanted. [Storage dependencies](external/anndatapp/docs/storage-dependencies.md)
+explicitly when wanted. [Storage dependencies](src/io/anndatapp/docs/storage-dependencies.md)
 remain private to AnnData++. Python, Scanpy, Torch, CUDA, and Cellerator are not
 runtime dependencies of the reference. Numerical storage is FP32/FP64 where
-supported; Cellerator owns specialized device and FP16 implementations.
+supported by the reference. Generic computational and arithmetic capabilities
+belong to Cellerator; scientific integration and specialized method
+implementations belong to CCell. The deferred native FP16 velocity adapter is
+not part of this package yet.
 
 Installed CMake consumers use `find_package(ccell CONFIG REQUIRED)` and link
 `ccell::ccell`. Configure with the compatible compiler, Ninja, and
@@ -65,7 +74,7 @@ build or installed CONFIG package.
 
 - `src/ccell.cppm` and component interfaces: umbrella and type-preserving exports.
 - `src/preprocess/`: ccell-owned preprocessing calculations.
-- `external/anndatapp/`: unchanged AnnData++ Git submodule.
+- `src/io/anndatapp/`: CCell data/IO component, retained as an independent AnnData++ Git submodule.
 - `external/velocitypp/`: standalone Velocity++ Git submodule.
 - Root tests, examples, tools, docs, benchmarks, and planning records group
   preprocessing material under their component directories.

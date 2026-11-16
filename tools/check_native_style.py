@@ -160,7 +160,7 @@ def include_lines(raw: str, masked: str) -> list[tuple[int, str, str]]:
 
 def audit(root: Path, roots: list[str]) -> tuple[list[str], int, int]:
     root = root.resolve()
-    authored_root = root / "external/anndatapp"
+    authored_root = root / "src/io/anndatapp"
     reference_roots = (root / "src", root / "external/velocitypp/src")
     errors: list[str] = []
     initial = source_files(root, roots)

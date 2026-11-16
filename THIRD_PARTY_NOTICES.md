@@ -42,8 +42,9 @@ See the [pinned Scanpy 1.11.5 source](https://github.com/scverse/scanpy/tree/1.1
 
 ## Bundled AnnData++
 
-AnnData++ remains an independently maintained dependency. Its license is
-retained below and in `external/anndatapp/LICENSE`.
+AnnData++ is CCell's data and IO component, retained as an independently
+maintained Git submodule. Its license is reproduced below and in
+`src/io/anndatapp/LICENSE`.
 
 MIT License
 
