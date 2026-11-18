@@ -12,6 +12,10 @@ execution visible.
   versus element strides precisely.
 - The standard reference allocates nothing in sizing, validation, preparation,
   binding, or execution. All outputs and scratch are supplied by the caller.
+- CCell objects may compose public Cellerator owners, views and prepared
+  operations. Provision resources explicitly, retain them across calls, and
+  reuse sufficient capacity without allocation, copying or transfer. Numerical
+  work consumes borrowed storage under the root contract.
 - Use small structs and ordinary free functions for data and computations.
   Introduce classes for ownership or real invariants. Do not add callback
   layers, wrapper hierarchies, or generic frameworks without a concrete user.
@@ -23,5 +27,6 @@ execution visible.
 
 Follow the binding [ccell numerical style](../../coding_style.md), including its
 minimal include policy, strict numerical rules, and downstream replacement
-contracts. The Cellerator style is its baseline and remains unchanged. Fast
+contracts. Cellerator's independently protected style supplies the equally
+strict numerical and systems baseline. Fast
 imports and consumer recompilation are required.

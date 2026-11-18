@@ -2,7 +2,7 @@
 
 ## Purpose and boundaries
 
-The `preprocess` subtree is part of ccell's independent C++20 reference biology
+The `preprocess` subtree is part of CCell's C++20 reference biology
 package. Its public functions provide an explicit CPU reference built on
 AnnData++. Scanpy supplies pinned numerical comparison behavior; it does not
 dictate Python-style call semantics.
@@ -10,9 +10,11 @@ Numerical similarity is required; bitwise identity and universal equality of
 intermediates are not requirements. Explain consequential differences and
 qualify them with scientific quantities and tolerances.
 
-`preprocess` depends on AnnData++. It does not depend on Python, Scanpy at
-runtime, Torch, CUDA, or Cellerator. Keep preprocessing, fitting, PCA,
-neighbors, GPU execution, and dataset orchestration as separate concerns.
+The current CPU `preprocess` target depends on AnnData++ and has no runtime
+Python, Scanpy, Torch, CUDA, or Cellerator dependency. Cellerator is an approved
+normal dependency for CCell objects and implementations when used; the current
+target wiring is not a prohibition. Keep scientific method contracts distinct
+from reusable computation and explicit resource provisioning.
 
 ## C++ and numerical style
 
@@ -26,9 +28,14 @@ neighbors, GPU execution, and dataset orchestration as separate concerns.
   implementation-only code in compiled source files.
 - Use direct arrays, pointers, extents, strides, sparse offsets and indices.
   Make allocation, conversion, mutation, and materialization explicit.
-- Use AnnData++ views directly. Keep shape, layout, lifetime and buffer
-  representation with AnnData++; do not maintain a parallel matrix abstraction.
+- Reuse AnnData++ acquired data descriptors and Cellerator public computation
+  objects where appropriate. Preserve their distinct shape/layout/lifetime
+  contracts; do not maintain a parallel generic matrix or ownership framework.
   Preprocess owns numerical operations and their additional contracts.
+- Numerical sizing, preparation and evaluation consume supplied storage.
+  Explicit provisioning uses existing Cellerator resource operations. Reuse
+  sufficient capacity; repeated calls and compatible smaller inputs allocate
+  nothing. Cheap stack views need no caching framework.
 - Resolve validation and representation dispatch at acquisition boundaries.
   Keep element loops free of type-erased dispatch, repeated validation and
   hidden synchronization. Callers own parallel execution.

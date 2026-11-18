@@ -16,15 +16,18 @@ function pointers support caller-defined state. Custom layouts can persist
 through an entire replacement region; conversion is required only where that
 region connects to retained code. Replacements may allocate explicitly.
 CCell owns its scientific methods and biological data integration. Cellerator
-is a sibling computation substrate for future optional accelerated
-implementations owned by CCell. The standard computational reference remains
-independent of Cellerator; this package currently provides that reference path.
+is the reusable computation substrate and an approved normal dependency for
+CCell objects and implementations. CCell may compose its public owners, buffers,
+views, layouts, and prepared operations. The current targets still provide the
+AnnData++-based reference and do not yet link Cellerator or provide acceleration.
 
 Read the binding [coding style](coding_style.md) before numerical development.
 It extends Cellerator's compact numerical style with minimal scalar includes,
 compiler builtins, visible data structures, and allocation-free reference work.
 Development-only tests and qualification tools may use ordinary library code.
-AnnData++ is the explicit exception for the existing data model and ownership.
+AnnData++ and Cellerator public abstractions have their own implementation
+authority. CCell-authored numerical code remains strict and allocation-free;
+objects provision and retain computation storage explicitly through Cellerator.
 
 ```cpp
 import ccell;             // All three components, with the same component types.
@@ -55,8 +58,9 @@ cmake --install build/debug --prefix /path/to/ccell-install
 Release, shared, and sanitizer presets are also provided. Storage backends are
 off in these presets; enable `ANNDATAPP_ENABLE_HDF5` or `ANNDATAPP_ENABLE_ZARR`
 explicitly when wanted. [Storage dependencies](src/io/anndatapp/docs/storage-dependencies.md)
-remain private to AnnData++. Python, Scanpy, Torch, CUDA, and Cellerator are not
-runtime dependencies of the reference. Numerical storage is FP32/FP64 where
+remain private to AnnData++. The current reference targets have no Python,
+Scanpy, Torch, CUDA, or Cellerator runtime dependency; Cellerator is approved for
+new object and computation integration. Numerical storage is FP32/FP64 where
 supported by the reference. Generic computational and arithmetic capabilities
 belong to Cellerator; scientific integration and specialized method
 implementations belong to CCell. The deferred native FP16 velocity adapter is

@@ -56,6 +56,8 @@ if(CCELL_BUILD_TESTS)
   if(Python3_Interpreter_FOUND)
     add_test(NAME ccell-native-style COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_native_style.py)
+    add_test(NAME ccell-native-style-fixtures COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/style/test_native_style.py)
   endif()
   foreach(suite IN ITEMS umbrella components)
     add_executable(ccell_${suite} tests/${suite}.cpp)

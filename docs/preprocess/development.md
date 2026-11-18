@@ -12,6 +12,11 @@ allocates no memory during sizing, validation, preparation, or execution.
 Consumers create AnnData++ storage, retain its views, allocate and initialize
 all output and workspace, and control parallelism. Checked calls report status
 and required capacity; trusted calls use the documented preconditions.
+CCell objects may also compose approved Cellerator computation types. Provision
+resources explicitly and reuse sufficient capacity; numerical preparation and
+execution consume supplied storage. The current CPU target still uses the
+AnnData++ descriptors and does not yet link Cellerator. This approval changes
+the development boundary, not the current target's implemented capabilities.
 
 With the reference Python environment installed, run the independent Scanpy
 1.11.5 comparison from the repository root:

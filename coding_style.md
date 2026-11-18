@@ -1,8 +1,9 @@
 # ccell numerical development style
 
-ccell is a C++20 numerical development reference for competent programmers who
-require direct, potentially unsafe control of biological data, memory,
-algorithms, representations, and execution. Expose the machine and calculation.
+CCell supplies C++20 scientific objects and numerical reference calculations
+for competent programmers who require direct, potentially unsafe control of
+biological data, memory, algorithms, representations, and execution. Expose the
+machine and calculation.
 The reference is usable code and scientific comparison material; its internal
 architecture is not a requirement imposed on downstream implementations.
 
@@ -13,16 +14,28 @@ contributor authority. Do not weaken, replace, move, or remove it, or weaken its
 protection in AGENTS.md, without explicit user authorization for that change.
 General refactoring authority does not authorize such changes.
 
-The compact mathematical style of Cellerator's protected coding_style.md is the
-baseline, strengthened here. Preserve that independent document unchanged.
-This note is self-contained: a checkout does not need Cellerator to build.
+The equally strict numerical and systems style of Cellerator's independently
+protected coding_style.md is the shared baseline, adapted here to biology.
+Cellerator is an approved normal dependency for CCell public objects and
+implementations. This permission does not assert that a particular build
+already links Cellerator, and does not require Torch or Cellerator's Cell class.
 
-These rules cover shipped implementations, public templates, and examples,
-including Velocity++. AnnData++ is the explicit data-model/ownership exception;
-its imported implementation is not permission to introduce library machinery
-into numerical code. Development-only tests, qualification drivers, Python
-scripts, and measurement infrastructure may use ordinary library facilities.
+These rules cover all authored shipped native implementations, public templates,
+object orchestration, and examples, including Velocity++ reference code.
+AnnData++ supplies biological data/IO and its array/view/lifetime model;
+Cellerator public objects supply reusable computation, storage, layouts, and
+execution. Their imported implementation headers have their own authority.
+Those dependency boundaries do not exempt CCell-authored wrappers or helpers,
+or permit direct STL machinery under a different name. Necessary platform and
+vendor declarations belong at their actual integration boundary; a foreign
+API-mandated type is not permission to move numerical code into an adapter.
+Development-only tests, qualification drivers, Python scripts, and measurement
+infrastructure may use ordinary library facilities.
 Their dependencies must not leak into shipped interfaces or implementations.
+
+Existing noncompliant implementation is debt, not an example to copy. New and
+reworked code follows this contract. Review the affected calculation and its
+helpers; do not launch an unrelated whole-repository conformance campaign.
 
 ## Write the calculation directly
 
@@ -56,16 +69,20 @@ Compile-time machinery must remove identifiable repetition or recurring work.
 Avoid generic frameworks, registration systems, class hierarchies, forwarding
 layers, and policy machinery without a concrete computational need.
 
-No STL containers or algorithms in shipped numerical code: no vector, list,
-map, set, string, optional, span, ranges, function, smart pointers, or equivalent
-machinery concealed behind another name. Do not replace vector with a home-made
-growing container. Operation-specific state consists of visible fields, pointers,
-counts, capacities, and explicit initialization. Classes require real invariants.
+No STL machinery in authored shipped native code: no containers, algorithms,
+vector, list, map, set, tuple, variant, string, optional, span, ranges, function,
+smart pointers, or equivalent machinery concealed behind another name. Do not
+replace vector with a home-made growing container. Operation-specific state
+consists of visible fields, pointers, counts, capacities, and explicit
+initialization. Classes require real invariants.
 
-AnnData++ owns the existing array/view/lifetime model. Reuse its acquired
-descriptors where they express the contract; do not create a second general
-matrix or storage model. Operation-specific topology and workspace are ordinary
-borrowed algorithm state, not another ownership framework.
+Use AnnData++ acquired descriptors for biological data and Cellerator public
+owners, buffers, views, layouts, and prepared operations for computation where
+they express the contract. CCell classes may compose those types and enforce
+biological invariants. Do not create another generic matrix, ownership, or
+execution framework in CCell. Numerical methods consume borrowed storage;
+owning resource provisioning is an explicit separate operation. Ordinary stack
+descriptors and cheap borrowed views need no cache or allocation framework.
 
 ## Includes and compiled modules
 
@@ -76,6 +93,10 @@ linkage and numerical semantics; this is not a freestanding-runtime promise.
 Do not include cstdlib, stdlib.h, cmath, math.h, algorithm, numeric, utility,
 type_traits, limits, or other broad C++ library headers in numerical code.
 Audit transitive includes originating in authored code as well as direct ones.
+Public Cellerator headers are an approved dependency boundary under Cellerator's
+own style rules. Their required implementation headers do not grant the same
+permission to CCell-authored code. Using an established Cellerator interface
+does not require auditing or cleaning its entire legacy implementation first.
 
 Keep public named-module interfaces small. Ordinary calculations and common
 specializations belong in separately compiled implementation units. Export
@@ -102,6 +123,35 @@ The caller performs AnnData++ storage creation, metadata attachment, selection
 materialization, and other potentially allocating acquisition. An already
 acquired retained descriptor may be copied only when that path allocates
 nothing. Fully borrowed pointer calls leave lifetime entirely with the caller.
+
+## Explicit provisioning and storage reuse
+
+CCell objects may retain Cellerator storage across calls. The caller can be an
+owning scientific or analysis object; callers need not recreate buffers for
+each numerical call. Explicit Cellerator resource operations acquire, grow,
+and release backing storage outside reference sizing, validation, preparation,
+binding, and evaluation. Provision metadata, topology, outputs, and scratch too.
+
+Reuse sufficient existing capacity, alignment, and placement. A reserve request
+already satisfied by them must perform no backing allocation, copying, or
+transfer. Repeated numerical execution within provisioned capacities allocates
+nothing, including ownership/control records and diagnostics. Compatible value
+changes and smaller inputs reuse sufficient storage; invalidate only prepared
+state whose documented dependencies changed.
+
+Distinguish persistent data/results, prepared state, and scratch. Each allocation
+has one releasing owner. Views and cell/gene handles must not create per-entry
+allocations. Keep storage and retained contents live through their final
+asynchronous consumer; resetting a workspace cursor does not prove completion.
+Initialization, zeroing, copying, repacking, transfers, and synchronization are
+deliberate operations with a concrete computational need.
+
+For data-dependent sizes, expose counting, sufficient bounds, or bounded
+execution with capacity reporting as appropriate. Do not mandate another full
+planning pass for every small operation. A pool does not excuse temporary
+churn, materialization, or excessive retention. Prefer existing ownership and
+workspace facilities; new allocators, pools, caches, or memory planners require
+a demonstrated in-scope need.
 
 ## Contracts, unsafe access, and execution
 
@@ -201,3 +251,9 @@ fresh/repeated calls. Verify ordinary and customized imports, caller storage,
 foreign layouts, and private-edit rebuild isolation. Preserve scientific
 fixtures and historical receipts. Performance and compilation claims require
 current, source-bound measurements; source appearance is not a speed result.
+For allocation-sensitive changes, check changed values and smaller compatible
+inputs after provisioning: no additional allocation or unnecessary copying,
+and stable retained storage. Report initial provisioning separately, including
+allocation counts, allocated bytes, peak live/retained bytes and required copy
+or transfer bytes. Use focused existing instrumentation, not a new measurement
+framework. Lexical checks cannot prove indirect allocation or transparent math.

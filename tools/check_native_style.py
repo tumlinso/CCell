@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Audit shipped ccell and Velocity++ C++ against coding_style.md."""
+"""Lexically audit shipped ccell and Velocity++ C++ against coding_style.md."""
 
 from __future__ import annotations
 
@@ -28,15 +28,18 @@ ANN_DATA_SCALARS = {
     "intmax_t", "uintmax_t", "uintptr_t", "intptr_t",
 }
 STD_NAME_RE = re.compile(r"\bstd\s*::\s*([A-Za-z_]\w*)")
-STD_NAMESPACE_RE = re.compile(r"\busing\s+namespace\s+std\s*;")
+STD_NAMESPACE_RE = re.compile(r"\busing\s+namespace\s+(?:::)?std\s*;")
 STD_USING_RE = re.compile(r"\busing\s+std\s*::\s*([A-Za-z_]\w*)")
 ALLOC_RE = re.compile(
     r"\b(?:new|delete)\b|\b(?:malloc|calloc|realloc|reallocarray|free|"
     r"aligned_alloc|posix_memalign|valloc|strdup|strndup|alloca)\s*\("
 )
-INCLUDE_RE = re.compile(r"^\s*#\s*include\s*([<\"])([^>\"]+)[>\"]")
+NUMBER_RE = re.compile(r"[0-9][\w.']*")
+INCLUDE_RE = re.compile(r"^\s*#\s*include\s*([<\"])([^>\"]+)([>\"])")
 PREPROCESSOR_RE = re.compile(r"^\s*#")
-STD_NAMESPACE_ALIAS_RE = re.compile(r"\bnamespace\s+[A-Za-z_]\w*\s*=\s*std\s*;")
+STD_NAMESPACE_ALIAS_RE = re.compile(
+    r"\bnamespace\s+[A-Za-z_]\w*\s*=\s*(?:::)?std\s*;"
+)
 STD_IMPORT_RE = re.compile(r"\b(?:export\s+)?import\s+(?:std(?:\.[A-Za-z_]\w*)?|<[^>]+>)\s*;")
 
 
@@ -80,6 +83,14 @@ def mask_non_code(text: str) -> str:
             i = end
             continue
 
+        if text[i].isdigit() and (
+            i == 0 or not (text[i - 1].isalnum() or text[i - 1] == "_")
+        ):
+            number = NUMBER_RE.match(text, i)
+            if number:
+                i = number.end()  # Keep numeric digit separators out of literal masking.
+                continue
+
         # Ordinary and prefixed string/character literals. Prefix letters are
         # left as code identifiers; the quote itself begins the masked region.
         if text[i] in "\"'":
@@ -121,10 +132,26 @@ def under(path: Path, directory: Path) -> bool:
 
 
 def local_include(path: Path, spelling: str, root: Path) -> Path | None:
-    for candidate in ((path.parent / spelling).resolve(), (root / spelling).resolve()):
+    candidates = (
+        (path.parent / spelling).resolve(),
+        (root / spelling).resolve(),
+        (root / "include" / spelling).resolve(),
+    )
+    for candidate in candidates:
         if under(candidate, root) and candidate.is_file():
             return candidate
     return None
+
+
+def is_cellerator_public_include(spelling: str) -> bool:
+    """Recognize only explicit paths under Cellerator's public include root."""
+    parts = spelling.split("/")
+    return (
+        len(parts) > 1
+        and parts[0] == "Cellerator"
+        and "\\" not in spelling
+        and all(part not in {"", ".", ".."} for part in parts[1:])
+    )
 
 
 def include_lines(raw: str, masked: str) -> list[tuple[int, str, str]]:
@@ -150,7 +177,11 @@ def include_lines(raw: str, masked: str) -> list[tuple[int, str, str]]:
 
         if re.match(r"^\s*#\s*include\b", logical_code):
             match = INCLUDE_RE.match(logical_raw)
-            if match and not logical_code[match.end():].strip():
+            if (
+                match
+                and match.group(3) == (">" if match.group(1) == "<" else '"')
+                and not logical_code[match.end():].strip()
+            ):
                 found.append((first, match.group(1), match.group(2).strip()))
             else:
                 found.append((first, "?", "<macro or malformed include>"))
@@ -189,6 +220,11 @@ def audit(root: Path, roots: list[str]) -> tuple[list[str], int, int]:
         )
 
         for line, delimiter, include in include_lines(raw, code):
+            if delimiter in {"<", '"'} and is_cellerator_public_include(include):
+                nested = local_include(path, include, root)
+                if nested:
+                    scan(nested, allocation_rule)
+                continue  # The compiler resolves public headers outside the CCell tree.
             if delimiter == "<":
                 if include not in FUNDAMENTAL_HEADERS and Path(include).name not in INTRINSIC_HEADERS:
                     errors.append(f"{rel}:{line}: system include <{include}> is outside the minimal header set")
@@ -254,10 +290,10 @@ def main() -> int:
     errors, source_count, scanned_count = audit(root, roots)
     if errors:
         print("\n".join(errors), file=sys.stderr)
-        print(f"ccell native style failed: {len(errors)} finding(s), {scanned_count} files scanned", file=sys.stderr)
+        print(f"ccell native style lexical audit failed: {len(errors)} finding(s), {scanned_count} files scanned", file=sys.stderr)
         return 1
     print(
-        f"ccell native style passed: {source_count} shipped C++ files; "
+        f"ccell native style lexical audit passed: {source_count} shipped C++ files; "
         f"{scanned_count} files including authored local headers"
     )
     return 0

@@ -8,13 +8,15 @@ threading and synchronization. See the [numerical contract](operations.md).
 
 The `preprocess` named module is available directly and through
 `import ccell.preprocess;`. AnnData++ remains the owner of array storage and
-views. Preprocessing does not introduce a parallel matrix or ownership model.
+views for the current reference. Cellerator public computation objects are
+approved when needed; preprocessing does not introduce a parallel generic
+matrix or ownership model.
 The API exposes reference operations and permits replacement of individual
 operations or larger regions with caller defined algorithms and layouts.
 
 The scope includes quality control and filters, feature statistics, total
 normalization, log transforms, scaling, and Seurat or Cell Ranger highly
-variable gene calculations. The package has no runtime dependency on Python,
+variable gene calculations. The current target has no runtime dependency on Python,
 Scanpy, Torch, CUDA, or Cellerator. Scanpy 1.11.5 is used only for optional
 independent numerical qualification.
 
