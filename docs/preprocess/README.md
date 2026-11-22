@@ -1,30 +1,29 @@
 # ccell preprocessing
 
-Preprocessing is ccell owned source under `src/preprocess/`. It provides direct
-C++20 numerical operations over AnnData++ arrays for single cell development.
+The preprocessing methods under `src/preprocess/` provide direct C++20
+numerical operations over native Cellerator views.
 The standard implementation makes traversal explicit and performs no
 allocation. Callers acquire storage, supply outputs and scratch, and choose
 threading and synchronization. See the [numerical contract](operations.md).
 
-The `preprocess` named module is available directly and through
-`import ccell.preprocess;`. AnnData++ remains the owner of array storage and
-views for the current reference. Cellerator public computation objects are
-approved when needed; preprocessing does not introduce a parallel generic
-matrix or ownership model.
+Use `import ccell.preprocess;` and call methods in `ccell::preprocess`.
+For AnnData++ input, acquire storage through `import anndata;` and bind it with
+the optional `ccell.interop.anndata` adapter. The input owner stays with the
+caller.
 The API exposes reference operations and permits replacement of individual
 operations or larger regions with caller defined algorithms and layouts.
 
 The scope includes quality control and filters, feature statistics, total
 normalization, log transforms, scaling, and Seurat or Cell Ranger highly
-variable gene calculations. The current target has no runtime dependency on Python,
-Scanpy, Torch, CUDA, or Cellerator. Scanpy 1.11.5 is used only for optional
-independent numerical qualification.
+variable gene calculations. The CPU method target builds with the data adapter
+disabled. Scanpy 1.11.5 supplies independent comparison cases for optional
+qualification.
 
 ## Build and validate
 
-Build and install preprocessing through the ccell root CMake project. Follow
-the [root build instructions](../../README.md). The component has no standalone
-package or configure step. The root build provides the `ccell::preprocess`
+Build and install preprocessing through the Cellerator root CMake project.
+Follow the [CCell build instructions](../../README.md). The root build provides
+the `ccell::preprocess`
 target and optional native tests, example, Scanpy comparison driver, and
 runtime benchmark.
 

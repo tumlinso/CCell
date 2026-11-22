@@ -1,11 +1,16 @@
 module;
 #include <stddef.h>
 #include <stdint.h>
+#include "CCell/detail/native_views.hh"
 module preprocess.qc;
 namespace preprocess {
+using detail::DenseInput;
+using detail::SparseInput;
+using detail::DType;
+using detail::Layout;
 namespace {
-using D = anndatapp::DType;
-using L = anndatapp::Layout;
+using D = DType;
+using L = Layout;
 template<class T> T load(const void* p) { T x; __builtin_memcpy(&x,p,sizeof(T)); return x; }
 template<class F> QcStatus numeric(D d, F f) {
     switch (d) {
@@ -20,6 +25,7 @@ template<class F> QcStatus numeric(D d, F f) {
     case D::uint64: return f.template operator()<uint64_t>();
     case D::float32: return f.template operator()<float>();
     case D::float64: return f.template operator()<double>();
+    case D::invalid: break;
     }
     return {QcCode::unsupported_type};
 }
@@ -35,14 +41,25 @@ template<class T, class I, class O, bool Checked = true, class F> QcStatus spars
     const auto* p = x.values(); const auto* ix = x.indices(); const auto* off = x.offsets();
     size_t rows = x.rows(), cols = x.columns(), major = layout == L::csr ? rows : cols, minor = layout == L::csr ? cols : rows;
     if (!off || (x.nnz() && (!p || !ix))) return {QcCode::invalid_structure};
-    size_t prior_end = size_t(load<O>(off)); if constexpr (Checked) if (prior_end != 0) return {QcCode::invalid_structure};
+    auto first_offset = load<O>(off);
+    uint64_t index_limit = minor, offset_max = x.nnz();
+    if constexpr (Checked) {
+        constexpr uint64_t index_sign = uint64_t(1) << (8*sizeof(I)-1);
+        constexpr uint64_t offset_sign = uint64_t(1) << (8*sizeof(O)-1);
+        if (x.signed_indices && index_limit > index_sign) index_limit = index_sign;
+        if (x.signed_offsets && offset_max >= offset_sign) offset_max = offset_sign-1;
+        if (first_offset != 0) return {QcCode::invalid_structure};
+    }
+    size_t prior_end = size_t(first_offset);
     for (size_t a = 0; a < major; ++a) {
-        size_t end = size_t(load<O>(off+(a+1)*sizeof(O)));
-        if constexpr (Checked) if (end < prior_end || end > x.nnz()) return {QcCode::invalid_structure,a};
+        auto next = load<O>(off+(a+1)*sizeof(O));
+        if constexpr (Checked) if (next < prior_end || next > offset_max) return {QcCode::invalid_structure,a};
+        size_t end = size_t(next);
         size_t prior = 0;
         for (size_t k = prior_end; k < end; ++k) {
-            size_t b = size_t(load<I>(ix+k*sizeof(I)));
-            if constexpr (Checked) if (b >= minor || (k != prior_end && b <= prior)) return {QcCode::invalid_structure,k};
+            auto index = load<I>(ix+k*sizeof(I));
+            if constexpr (Checked) if (index >= index_limit || (k != prior_end && index <= prior)) return {QcCode::invalid_structure,k};
+            size_t b = size_t(index);
             prior = b; size_t i = layout == L::csr ? a : b, j = layout == L::csr ? b : a;
             if (i < first || i >= last) continue;
             double v = double(load<T>(p+k*sizeof(T)));
@@ -166,6 +183,10 @@ QcStatus qc_check(size_t rows,size_t cols,const QcOptions& o,const QcBuffers& b,
     for (size_t k = 0; k < cols*o.groups; ++k) if (o.masks[k] > 1) return {QcCode::invalid_value,k};
     return {};
 }
+QcStatus detail::check_sparse_structure(const SparseInput& x,Layout l) {
+    // An empty row interval checks all major/minor entries without loading values.
+    return entries<uint8_t>(x,l,0,0,[](size_t,size_t,double) { return true; });
+}
 void qc_zero(size_t rows,size_t cols,size_t groups,const QcBuffers& b) {
     for (size_t i=0;i<rows;++i) { b.cell_total[i]=0; b.cell_detected[i]=0; }
     for (size_t j=0;j<cols;++j) { b.gene_total[j]=0; b.gene_detected[j]=0; }
@@ -177,36 +198,36 @@ void qc_finish(size_t rows,size_t cols,const QcOptions& o,const QcBuffers& b) {
     for (size_t j=0;j<cols;++j) { double mean=rows?b.gene_total[j]/double(rows):__builtin_nan(""); if (b.mean) b.mean[j]=mean; if (b.dropout) b.dropout[j]=rows?100*(1-double(b.gene_detected[j])/double(rows)):__builtin_nan(""); if (b.log_gene_total) b.log_gene_total[j]=__builtin_log1p(b.gene_total[j]); if (b.log_gene_mean) b.log_gene_mean[j]=__builtin_log1p(mean); }
     for (size_t g=0;g<o.groups;++g) for (size_t i=0;i<rows;++i) { size_t k=g*rows+i; if (b.group_percent) b.group_percent[k]=100*b.group_total[k]/b.cell_total[i]; if (b.group_log_total) b.group_log_total[k]=__builtin_log1p(b.group_total[k]); }
 }
-QcStatus qc_accumulate(const DenseInput& x,D d,size_t first,size_t last,const QcOptions& o,const QcBuffers& b,double* scratch,size_t scratch_elements) {
+QcStatus detail::qc_accumulate(const DenseInput& x,D d,size_t first,size_t last,const QcOptions& o,const QcBuffers& b,double* scratch,size_t scratch_elements) {
     if (x.rank()!=2) return {QcCode::invalid_argument}; size_t rows=x.extent(0),cols=x.extent(1);
     if (first>last || last>rows) return {QcCode::invalid_argument};
     auto st=qc_check(rows,cols,o,b,scratch_elements); if (!st) return st;
     if (first<last && cols && o.tops && !scratch) return {QcCode::invalid_argument};
     return numeric(d,[&]<class T>() { if (x.element_size()!=sizeof(T)) return QcStatus{QcCode::invalid_argument}; if (rows && cols && !x.data()) return QcStatus{QcCode::invalid_argument}; return accumulate(x,rows,cols,first,last,o,b,scratch,[](const auto& a,size_t f,size_t l,auto fn){return entries<T>(a,f,l,fn);},[](const auto& a,size_t i,double* p){dense_row<T>(a,i,p);}); });
 }
-QcStatus qc_accumulate(const SparseInput& x,D d,L layout,size_t first,size_t last,const QcOptions& o,const QcBuffers& b,double* scratch,size_t scratch_elements) {
+QcStatus detail::qc_accumulate(const SparseInput& x,D d,L layout,size_t first,size_t last,const QcOptions& o,const QcBuffers& b,double* scratch,size_t scratch_elements) {
     if (first>last || last>x.rows()) return {QcCode::invalid_argument};
     auto st=qc_check(x.rows(),x.columns(),o,b,scratch_elements); if (!st) return st;
     if (first<last && x.columns() && o.tops && !scratch) return {QcCode::invalid_argument};
     return numeric(d,[&]<class T>() { if (x.value_size()!=sizeof(T)) return QcStatus{QcCode::invalid_argument}; return accumulate(x,x.rows(),x.columns(),first,last,o,b,scratch,[&](const auto& a,size_t f,size_t l,auto fn){return entries<T>(a,layout,f,l,fn);},[&](const auto& a,size_t i,double* p){sparse_row<T>(a,layout,i,p);}); });
 }
-QcStatus qc_validate(const DenseInput& x,D d,bool nonnegative) {
+QcStatus detail::qc_validate(const DenseInput& x,D d,bool nonnegative) {
     if (x.rank()!=2) return {QcCode::invalid_argument};
     return numeric(d,[&]<class T>() { if (x.element_size()!=sizeof(T) || (x.extent(0) && x.extent(1) && !x.data())) return QcStatus{QcCode::invalid_argument}; return entries<T>(x,0,x.extent(0),[&](size_t,size_t,double v) {return __builtin_isfinite(v) && (!nonnegative || v>=0);}); });
 }
-QcStatus qc_validate(const SparseInput& x,D d,L l,bool nonnegative) {
+QcStatus detail::qc_validate(const SparseInput& x,D d,L l,bool nonnegative) {
     return numeric(d,[&]<class T>() { if (x.value_size()!=sizeof(T)) return QcStatus{QcCode::invalid_argument}; return entries<T>(x,l,0,x.rows(),[&](size_t,size_t,double v) {return __builtin_isfinite(v) && (!nonnegative || v>=0);}); });
 }
-QcStatus qc_accumulate_unchecked(const DenseInput& x,D d,size_t first,size_t last,const QcOptions& o,const QcBuffers& b,double* scratch) {
+QcStatus detail::qc_accumulate_unchecked(const DenseInput& x,D d,size_t first,size_t last,const QcOptions& o,const QcBuffers& b,double* scratch) {
     if (x.rank()!=2) return {QcCode::invalid_argument}; return numeric(d,[&]<class T>() { return accumulate<false>(x,x.extent(0),x.extent(1),first,last,o,b,scratch,[](const auto& a,size_t f,size_t l,auto fn){return entries<T,false>(a,f,l,fn);},[](const auto& a,size_t i,double* p){dense_row<T>(a,i,p);}); });
 }
-QcStatus qc_accumulate_unchecked(const SparseInput& x,D d,L l,size_t first,size_t last,const QcOptions& o,const QcBuffers& b,double* scratch) {
+QcStatus detail::qc_accumulate_unchecked(const SparseInput& x,D d,L l,size_t first,size_t last,const QcOptions& o,const QcBuffers& b,double* scratch) {
     return numeric(d,[&]<class T>() { return accumulate<false>(x,x.rows(),x.columns(),first,last,o,b,scratch,[&](const auto& a,size_t f,size_t z,auto fn){return entries<T,false>(a,l,f,z,fn);},[&](const auto& a,size_t i,double* p){sparse_row<T>(a,l,i,p);}); });
 }
-QcStatus qc(const DenseInput& x,D d,const QcOptions& o,const QcBuffers& b,double* scratch,size_t n) {
+QcStatus detail::qc(const DenseInput& x,D d,const QcOptions& o,const QcBuffers& b,double* scratch,size_t n) {
     if (x.rank()!=2) return {QcCode::invalid_argument}; auto st=qc_check(x.extent(0),x.extent(1),o,b,n); if (!st) return st; if (x.extent(0) && x.extent(1) && o.tops && !scratch) return {QcCode::invalid_argument}; qc_zero(x.extent(0),x.extent(1),o.groups,b); st=qc_accumulate(x,d,0,x.extent(0),o,b,scratch,n); if (st) qc_finish(x.extent(0),x.extent(1),o,b); return st;
 }
-QcStatus qc(const SparseInput& x,D d,L l,const QcOptions& o,const QcBuffers& b,double* scratch,size_t n) {
+QcStatus detail::qc(const SparseInput& x,D d,L l,const QcOptions& o,const QcBuffers& b,double* scratch,size_t n) {
     auto st=qc_check(x.rows(),x.columns(),o,b,n); if (!st) return st; if (x.rows() && x.columns() && o.tops && !scratch) return {QcCode::invalid_argument}; qc_zero(x.rows(),x.columns(),o.groups,b); st=qc_accumulate(x,d,l,0,x.rows(),o,b,scratch,n); if (st) qc_finish(x.rows(),x.columns(),o,b); return st;
 }
 QcStatus filter(const double* totals,const uint64_t* detected,size_t n,const FilterBounds& b,uint8_t* keep,size_t cap) {
@@ -215,11 +236,11 @@ QcStatus filter(const double* totals,const uint64_t* detected,size_t n,const Fil
     for (size_t i=0;i<n;++i) keep[i]=(!b.has_min_counts || totals[i]>=b.min_counts) && (!b.has_max_counts || totals[i]<=b.max_counts) && (!b.has_min_detected || detected[i]>=b.min_detected) && (!b.has_max_detected || detected[i]<=b.max_detected);
     return {};
 }
-QcStatus stats_partial(const DenseInput& x,D d,size_t first,size_t last,const uint8_t* mask,StatsPartial& out,uint64_t* count,size_t capacity) {
+QcStatus detail::stats_partial(const DenseInput& x,D d,size_t first,size_t last,const uint8_t* mask,StatsPartial& out,uint64_t* count,size_t capacity) {
     if (x.rank()!=2) return {QcCode::invalid_argument};
     return numeric(d,[&]<class T>() { if (x.element_size()!=sizeof(T) || (x.extent(0) && x.extent(1) && !x.data())) return QcStatus{QcCode::invalid_argument}; return partial(x,x.extent(0),x.extent(1),first,last,mask,out,count,capacity,[](const auto& a,size_t f,size_t l,auto fn) {return entries<T>(a,f,l,fn);}); });
 }
-QcStatus stats_partial(const SparseInput& x,D d,L l,size_t first,size_t last,const uint8_t* mask,StatsPartial& out,uint64_t* count,size_t capacity) {
+QcStatus detail::stats_partial(const SparseInput& x,D d,L l,size_t first,size_t last,const uint8_t* mask,StatsPartial& out,uint64_t* count,size_t capacity) {
     return numeric(d,[&]<class T>() { if (x.value_size()!=sizeof(T)) return QcStatus{QcCode::invalid_argument}; return partial(x,x.rows(),x.columns(),first,last,mask,out,count,capacity,[&](const auto& a,size_t f,size_t z,auto fn) {return entries<T>(a,l,f,z,fn);}); });
 }
 QcStatus stats_merge(StatsPartial& a,const StatsPartial& b) {
@@ -238,16 +259,16 @@ QcStatus stats_finish(StatsPartial& p,double* variance,size_t capacity) {
     }
     return {};
 }
-QcStatus feature_stats(const DenseInput& x,D d,const uint8_t* mask,double* mean,double* variance,size_t cap,uint64_t* scratch,size_t n,size_t* obs) {
+QcStatus detail::feature_stats(const DenseInput& x,D d,const uint8_t* mask,double* mean,double* variance,size_t cap,uint64_t* scratch,size_t n,size_t* obs) {
     if (x.rank()!=2) return {QcCode::invalid_argument}; return numeric(d,[&]<class T>() { if (x.element_size()!=sizeof(T)) return QcStatus{QcCode::invalid_argument}; if (x.extent(0) && x.extent(1) && !x.data()) return QcStatus{QcCode::invalid_argument}; return statistics(x,x.extent(0),x.extent(1),mask,mean,variance,cap,scratch,n,obs,[](const auto& a,size_t f,size_t l,auto fn){return entries<T>(a,f,l,fn);}); });
 }
-QcStatus feature_stats(const SparseInput& x,D d,L l,const uint8_t* mask,double* mean,double* variance,size_t cap,uint64_t* scratch,size_t n,size_t* obs) {
+QcStatus detail::feature_stats(const SparseInput& x,D d,L l,const uint8_t* mask,double* mean,double* variance,size_t cap,uint64_t* scratch,size_t n,size_t* obs) {
     return numeric(d,[&]<class T>() { if (x.value_size()!=sizeof(T)) return QcStatus{QcCode::invalid_argument}; return statistics(x,x.rows(),x.columns(),mask,mean,variance,cap,scratch,n,obs,[&](const auto& a,size_t f,size_t z,auto fn){return entries<T>(a,l,f,z,fn);}); });
 }
-QcStatus feature_stats_unchecked(const DenseInput& x,D d,const uint8_t* mask,double* mean,double* variance,size_t cap,uint64_t* scratch,size_t n,size_t* obs) {
+QcStatus detail::feature_stats_unchecked(const DenseInput& x,D d,const uint8_t* mask,double* mean,double* variance,size_t cap,uint64_t* scratch,size_t n,size_t* obs) {
     if (x.rank()!=2) return {QcCode::invalid_argument}; return numeric(d,[&]<class T>() { return statistics<false>(x,x.extent(0),x.extent(1),mask,mean,variance,cap,scratch,n,obs,[](const auto& a,size_t f,size_t l,auto fn){return entries<T,false>(a,f,l,fn);}); });
 }
-QcStatus feature_stats_unchecked(const SparseInput& x,D d,L l,const uint8_t* mask,double* mean,double* variance,size_t cap,uint64_t* scratch,size_t n,size_t* obs) {
+QcStatus detail::feature_stats_unchecked(const SparseInput& x,D d,L l,const uint8_t* mask,double* mean,double* variance,size_t cap,uint64_t* scratch,size_t n,size_t* obs) {
     return numeric(d,[&]<class T>() { return statistics<false>(x,x.rows(),x.columns(),mask,mean,variance,cap,scratch,n,obs,[&](const auto& a,size_t f,size_t z,auto fn){return entries<T,false>(a,l,f,z,fn);}); });
 }
 

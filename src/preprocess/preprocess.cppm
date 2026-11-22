@@ -1,9 +1,26 @@
 module;
 #include <stddef.h>
 #include <stdint.h>
+#include "CCell/detail/native_views.hh"
 export module preprocess;
 export import preprocess.qc;
 export import preprocess.hvg;
+
+namespace preprocess::detail {
+using ::ccell::detail::DType;
+using ::ccell::detail::Layout;
+using ::ccell::detail::dtype;
+using ::ccell::detail::erase;
+using ::ccell::detail::layout;
+using DenseInput = ::ccell::detail::DenseBytes<const unsigned char>;
+using SparseInput = ::ccell::detail::SparseBytes<const unsigned char>;
+using DenseOutput = ::ccell::detail::DenseBytes<unsigned char>;
+using SparseOutput = ::ccell::detail::SparseBytes<unsigned char>;
+template<class I, class T, class O>
+SparseInput transform_source(cellerator::tensor::base::CompressedView<I,T,O> x) {
+    return erase(cellerator::tensor::base::CompressedView<I,const T,O>{x.structure,x.values});
+}
+}
 
 export namespace preprocess {
 
@@ -19,11 +36,10 @@ template<class Operation> QcStatus for_blocks(size_t total, size_t block, Operat
 }
 QcStatus for_blocks(size_t total, size_t block, void (*operation)(void*, size_t, size_t), void* context);
 
-// Caller acquires valid rank-2 AnnData byte descriptors before entering these
-// routines. Dense byte strides must be representable. Sparse inputs must have
-// canonical sorted-unique indices and valid offsets. Buffers must not overlap,
-// except identical source/destination storage with matching shape and strides.
-// Acquired descriptor lifetime and concurrent access are caller responsibilities.
+// Callers supply borrowed host matrix views and keep the storage live.
+// Sparse inputs must have canonical sorted-unique indices and valid offsets.
+// Buffers must not overlap except for identical input and output storage with
+// matching shape and strides.
 struct NormalizationOptions {
     bool target_is_set = false;
     double target_sum = 1;
@@ -41,44 +57,129 @@ struct NormalizationBuffers {
     double* scratch = nullptr; size_t scratch_capacity = 0;
     double target_sum = 1;
 };
-using DenseOutput = decltype(((const anndatapp::ArrayEdit*)nullptr)->bytes());
-using SparseOutput = decltype(((const anndatapp::ArrayEdit*)nullptr)->sparse_bytes());
-// Sparse output must declare the same orientation and contain exactly the input
-// index/offset structure. Checked calls compare structures; trusted calls assume it.
-
-QcStatus normalization_factors(const DenseInput&, anndatapp::DType, const NormalizationOptions&, NormalizationBuffers&);
-QcStatus normalization_factors(const SparseInput&, anndatapp::DType, anndatapp::Layout, const NormalizationOptions&, NormalizationBuffers&);
-QcStatus normalize_into(const DenseInput&, anndatapp::DType, const DenseOutput&, anndatapp::DType, const NormalizationOptions&, NormalizationBuffers&);
-QcStatus normalize_into(const SparseInput&, anndatapp::DType, anndatapp::Layout, const DenseOutput&, anndatapp::DType, const NormalizationOptions&, NormalizationBuffers&);
-QcStatus normalize_into(const SparseInput&, anndatapp::DType, anndatapp::Layout, const SparseOutput&, anndatapp::DType, anndatapp::Layout destination_layout, const NormalizationOptions&, NormalizationBuffers&);
-
-// Apply caller-supplied per-row factors; a zero factor leaves that row unchanged.
-// trusted=true skips the finite/nonnegative factor scan. Input and output contracts
-// are the same as normalize_into. The factors array has at least rows elements.
-QcStatus apply_normalization(const DenseInput&, anndatapp::DType, const DenseOutput&, anndatapp::DType, const double* factors, size_t capacity, bool trusted = false);
-QcStatus apply_normalization(const SparseInput&, anndatapp::DType, anndatapp::Layout, const DenseOutput&, anndatapp::DType, const double* factors, size_t capacity, bool trusted = false);
-QcStatus apply_normalization(const SparseInput&, anndatapp::DType, anndatapp::Layout, const SparseOutput&, anndatapp::DType, anndatapp::Layout destination_layout, const double* factors, size_t capacity, bool trusted = false);
-
-// base=0 specifies the natural logarithm; other bases must be positive and != 1.
-// trusted=true assumes the destination has valid nonoverlapping elements.
-QcStatus log1p_into(const DenseInput&, anndatapp::DType, const DenseOutput&, anndatapp::DType, double base = 0, bool trusted = false);
-QcStatus log1p_into(const SparseInput&, anndatapp::DType, anndatapp::Layout, const DenseOutput&, anndatapp::DType, double base = 0, bool trusted = false);
-QcStatus log1p_into(const SparseInput&, anndatapp::DType, anndatapp::Layout, const SparseOutput&, anndatapp::DType, anndatapp::Layout destination_layout, double base = 0, bool trusted = false);
-
 struct ScaleOptions {
     bool zero_center = true, clip = false;
     double max_value = 0;
     const uint8_t* observations = nullptr;
     bool trusted = false;
 };
+
+}
+
+namespace preprocess::detail {
+QcStatus normalization_factors(const DenseInput&, DType, const NormalizationOptions&, NormalizationBuffers&);
+QcStatus normalization_factors(const SparseInput&, DType, Layout, const NormalizationOptions&, NormalizationBuffers&);
+QcStatus normalize_into(const DenseInput&, DType, const DenseOutput&, DType, const NormalizationOptions&, NormalizationBuffers&);
+QcStatus normalize_into(const SparseInput&, DType, Layout, const DenseOutput&, DType, const NormalizationOptions&, NormalizationBuffers&);
+QcStatus normalize_into(const SparseInput&, DType, Layout, const SparseOutput&, DType, Layout destination_layout, const NormalizationOptions&, NormalizationBuffers&);
+QcStatus apply_normalization(const DenseInput&, DType, const DenseOutput&, DType, const double* factors, size_t capacity, bool trusted);
+QcStatus apply_normalization(const SparseInput&, DType, Layout, const DenseOutput&, DType, const double* factors, size_t capacity, bool trusted);
+QcStatus apply_normalization(const SparseInput&, DType, Layout, const SparseOutput&, DType, Layout destination_layout, const double* factors, size_t capacity, bool trusted);
+QcStatus log1p_into(const DenseInput&, DType, const DenseOutput&, DType, double base, bool trusted);
+QcStatus log1p_into(const SparseInput&, DType, Layout, const DenseOutput&, DType, double base, bool trusted);
+QcStatus log1p_into(const SparseInput&, DType, Layout, const SparseOutput&, DType, Layout destination_layout, double base, bool trusted);
+QcStatus scale_into(const DenseInput&, DType, const DenseOutput&, DType, const ScaleOptions&, double* mean, double* stddev, size_t capacity, uint64_t* scratch, size_t scratch_capacity);
+QcStatus scale_into(const SparseInput&, DType, Layout, const DenseOutput&, DType, const ScaleOptions&, double* mean, double* stddev, size_t capacity, uint64_t* scratch, size_t scratch_capacity);
+QcStatus scale_into(const SparseInput&, DType, Layout, const SparseOutput&, DType, Layout destination_layout, const ScaleOptions&, double* mean, double* stddev, size_t capacity, uint64_t* scratch, size_t scratch_capacity);
+QcStatus apply_scale(const DenseInput&, DType, const DenseOutput&, DType, const ScaleOptions&, const double* mean, const double* stddev, size_t capacity);
+QcStatus apply_scale(const SparseInput&, DType, Layout, const DenseOutput&, DType, const ScaleOptions&, const double* mean, const double* stddev, size_t capacity);
+QcStatus apply_scale(const SparseInput&, DType, Layout, const SparseOutput&, DType, Layout destination_layout, const ScaleOptions&, const double* mean, const double* stddev, size_t capacity);
+}
+
+export namespace preprocess {
+
+// Sparse output must declare the same orientation and contain exactly the input
+// index/offset structure. Checked calls compare structures; trusted calls assume it.
+
+template<class T, class S>
+QcStatus normalization_factors(cellerator::memory::const_matrix_view<T,S> x, const NormalizationOptions& options, NormalizationBuffers& buffers) {
+    return detail::normalization_factors(detail::erase(x),detail::dtype<T>(),options,buffers);
+}
+template<class I, class T, class O>
+QcStatus normalization_factors(cellerator::tensor::base::CompressedView<I,T,O> x, const NormalizationOptions& options, NormalizationBuffers& buffers) {
+    return detail::normalization_factors(detail::transform_source(x),detail::dtype<T>(),detail::layout(x),options,buffers);
+}
+
+template<class T, class S, class U, class R>
+QcStatus normalize_into(cellerator::memory::const_matrix_view<T,S> x, cellerator::memory::matrix_view<U,R> y, const NormalizationOptions& options, NormalizationBuffers& buffers) {
+    return detail::normalize_into(detail::erase(x),detail::dtype<T>(),detail::erase(y),detail::dtype<U>(),options,buffers);
+}
+template<class I, class T, class O, class U, class R>
+QcStatus normalize_into(cellerator::tensor::base::CompressedView<I,T,O> x, cellerator::memory::matrix_view<U,R> y, const NormalizationOptions& options, NormalizationBuffers& buffers) {
+    return detail::normalize_into(detail::transform_source(x),detail::dtype<T>(),detail::layout(x),detail::erase(y),detail::dtype<U>(),options,buffers);
+}
+template<class I, class T, class O, class J, class U, class P>
+QcStatus normalize_into(cellerator::tensor::base::CompressedView<I,T,O> x, cellerator::tensor::base::CompressedView<J,U,P> y, const NormalizationOptions& options, NormalizationBuffers& buffers) {
+    return detail::normalize_into(detail::transform_source(x),detail::dtype<T>(),detail::layout(x),detail::erase(y),detail::dtype<U>(),detail::layout(y),options,buffers);
+}
+
+// Apply caller-supplied per-row factors; a zero factor leaves that row unchanged.
+// trusted=true skips the finite/nonnegative factor scan. Input and output contracts
+// are the same as normalize_into. The factors array has at least rows elements.
+
+template<class T, class S, class U, class R>
+QcStatus apply_normalization(cellerator::memory::const_matrix_view<T,S> x, cellerator::memory::matrix_view<U,R> y, const double* factors, size_t capacity, bool trusted = false) {
+    return detail::apply_normalization(detail::erase(x),detail::dtype<T>(),detail::erase(y),detail::dtype<U>(),factors,capacity,trusted);
+}
+template<class I, class T, class O, class U, class R>
+QcStatus apply_normalization(cellerator::tensor::base::CompressedView<I,T,O> x, cellerator::memory::matrix_view<U,R> y, const double* factors, size_t capacity, bool trusted = false) {
+    return detail::apply_normalization(detail::transform_source(x),detail::dtype<T>(),detail::layout(x),detail::erase(y),detail::dtype<U>(),factors,capacity,trusted);
+}
+template<class I, class T, class O, class J, class U, class P>
+QcStatus apply_normalization(cellerator::tensor::base::CompressedView<I,T,O> x, cellerator::tensor::base::CompressedView<J,U,P> y, const double* factors, size_t capacity, bool trusted = false) {
+    return detail::apply_normalization(detail::transform_source(x),detail::dtype<T>(),detail::layout(x),detail::erase(y),detail::dtype<U>(),detail::layout(y),factors,capacity,trusted);
+}
+
+// base=0 specifies the natural logarithm; other bases must be positive and != 1.
+// trusted=true assumes the destination has valid nonoverlapping elements.
+
+template<class T, class S, class U, class R>
+QcStatus log1p_into(cellerator::memory::const_matrix_view<T,S> x, cellerator::memory::matrix_view<U,R> y, double base = 0, bool trusted = false) {
+    return detail::log1p_into(detail::erase(x),detail::dtype<T>(),detail::erase(y),detail::dtype<U>(),base,trusted);
+}
+template<class I, class T, class O, class U, class R>
+QcStatus log1p_into(cellerator::tensor::base::CompressedView<I,T,O> x, cellerator::memory::matrix_view<U,R> y, double base = 0, bool trusted = false) {
+    return detail::log1p_into(detail::transform_source(x),detail::dtype<T>(),detail::layout(x),detail::erase(y),detail::dtype<U>(),base,trusted);
+}
+template<class I, class T, class O, class J, class U, class P>
+QcStatus log1p_into(cellerator::tensor::base::CompressedView<I,T,O> x, cellerator::tensor::base::CompressedView<J,U,P> y, double base = 0, bool trusted = false) {
+    return detail::log1p_into(detail::transform_source(x),detail::dtype<T>(),detail::layout(x),detail::erase(y),detail::dtype<U>(),detail::layout(y),base,trusted);
+}
+
 // Fit requires columns elements in mean/stddev and uint64 scratch. Input mask
 // selects rows for both estimation and application. Sparse centered output is dense.
 // trusted=true omits per-element finite/structure validation in statistics.
 // Caller guarantees finite input and canonical structure, valid mask and parameters.
-QcStatus scale_into(const DenseInput&, anndatapp::DType, const DenseOutput&, anndatapp::DType, const ScaleOptions&, double* mean, double* stddev, size_t capacity, uint64_t* scratch, size_t scratch_capacity);
-QcStatus scale_into(const SparseInput&, anndatapp::DType, anndatapp::Layout, const DenseOutput&, anndatapp::DType, const ScaleOptions&, double* mean, double* stddev, size_t capacity, uint64_t* scratch, size_t scratch_capacity);
-QcStatus scale_into(const SparseInput&, anndatapp::DType, anndatapp::Layout, const SparseOutput&, anndatapp::DType, anndatapp::Layout destination_layout, const ScaleOptions&, double* mean, double* stddev, size_t capacity, uint64_t* scratch, size_t scratch_capacity);
-QcStatus apply_scale(const DenseInput&, anndatapp::DType, const DenseOutput&, anndatapp::DType, const ScaleOptions&, const double* mean, const double* stddev, size_t capacity);
-QcStatus apply_scale(const SparseInput&, anndatapp::DType, anndatapp::Layout, const DenseOutput&, anndatapp::DType, const ScaleOptions&, const double* mean, const double* stddev, size_t capacity);
-QcStatus apply_scale(const SparseInput&, anndatapp::DType, anndatapp::Layout, const SparseOutput&, anndatapp::DType, anndatapp::Layout destination_layout, const ScaleOptions&, const double* mean, const double* stddev, size_t capacity);
+
+template<class T, class S, class U, class R>
+QcStatus scale_into(cellerator::memory::const_matrix_view<T,S> x, cellerator::memory::matrix_view<U,R> y, const ScaleOptions& options, double* mean, double* stddev,
+    size_t capacity, uint64_t* scratch, size_t scratch_capacity) {
+    return detail::scale_into(detail::erase(x),detail::dtype<T>(),detail::erase(y),detail::dtype<U>(),options,mean,stddev,capacity,scratch,scratch_capacity);
+}
+template<class I, class T, class O, class U, class R>
+QcStatus scale_into(cellerator::tensor::base::CompressedView<I,T,O> x, cellerator::memory::matrix_view<U,R> y, const ScaleOptions& options, double* mean, double* stddev,
+    size_t capacity, uint64_t* scratch, size_t scratch_capacity) {
+    return detail::scale_into(detail::transform_source(x),detail::dtype<T>(),detail::layout(x),detail::erase(y),detail::dtype<U>(),options,mean,stddev,capacity,scratch,scratch_capacity);
+}
+template<class I, class T, class O, class J, class U, class P>
+QcStatus scale_into(cellerator::tensor::base::CompressedView<I,T,O> x, cellerator::tensor::base::CompressedView<J,U,P> y, const ScaleOptions& options, double* mean, double* stddev,
+    size_t capacity, uint64_t* scratch, size_t scratch_capacity) {
+    return detail::scale_into(detail::transform_source(x),detail::dtype<T>(),detail::layout(x),detail::erase(y),detail::dtype<U>(),detail::layout(y),options,mean,stddev,capacity,scratch,scratch_capacity);
+}
+
+template<class T, class S, class U, class R>
+QcStatus apply_scale(cellerator::memory::const_matrix_view<T,S> x, cellerator::memory::matrix_view<U,R> y, const ScaleOptions& options, const double* mean,
+    const double* stddev, size_t capacity) {
+    return detail::apply_scale(detail::erase(x),detail::dtype<T>(),detail::erase(y),detail::dtype<U>(),options,mean,stddev,capacity);
+}
+template<class I, class T, class O, class U, class R>
+QcStatus apply_scale(cellerator::tensor::base::CompressedView<I,T,O> x, cellerator::memory::matrix_view<U,R> y, const ScaleOptions& options, const double* mean,
+    const double* stddev, size_t capacity) {
+    return detail::apply_scale(detail::transform_source(x),detail::dtype<T>(),detail::layout(x),detail::erase(y),detail::dtype<U>(),options,mean,stddev,capacity);
+}
+template<class I, class T, class O, class J, class U, class P>
+QcStatus apply_scale(cellerator::tensor::base::CompressedView<I,T,O> x, cellerator::tensor::base::CompressedView<J,U,P> y, const ScaleOptions& options, const double* mean,
+    const double* stddev, size_t capacity) {
+    return detail::apply_scale(detail::transform_source(x),detail::dtype<T>(),detail::layout(x),detail::erase(y),detail::dtype<U>(),detail::layout(y),options,mean,stddev,capacity);
+}
 }

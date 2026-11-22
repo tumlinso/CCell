@@ -1,9 +1,8 @@
 # Numerical operations
 
-The preprocessing reference is implemented in ccell's `preprocess` module and
-compares numerical behavior with Scanpy 1.11.5. It uses C++ native operation
-contracts, not Scanpy's Python calling conventions. AnnData++ owns array
-storage, views, layouts, and lifetimes. Callers supply result and scratch
+Use `import ccell.preprocess;` for methods over typed native Cellerator views.
+Scanpy 1.11.5 supplies independent comparison cases. Callers retain their input
+owners, supply result and scratch
 buffers and own all threading. The standard reference allocates no memory,
 including for sizing, validation, preparation, and empty inputs.
 
@@ -19,14 +18,12 @@ can leave output and scratch partly modified; the reference does not roll back.
 Callers must use the status to determine whether outputs are valid and re-run
 the operation after correcting the input if needed.
 
-Acquisition from an AnnData++ owner may retain its existing descriptor; it must
-not create numerical output or hidden workspace. Callers create arrays, attach
-metadata, materialize selections, and perform any required conversion. Dense
-matrix inputs may have signed strides. Sparse inputs use canonical CSR or CSC;
-index and offset widths are independent, and stored zeros do not alter
-mathematical values. An arbitrary gather has no direct dense pointer view and
-must be materialized by the caller before an operation that needs direct
-traversal.
+Callers create or acquire arrays, attach metadata, materialize selections, and
+perform any required conversion. The optional AnnData++ adapter can bind a
+native view over acquired storage. Dense matrix inputs may have signed element
+strides. Sparse inputs use canonical CSR or CSC with independently typed indices
+and offsets. Stored zeros do not alter mathematical values. Materialize an
+arbitrary gather before passing it to direct numerical traversal.
 
 Integer input supports summaries and count operations. Floating transforms
 write FP32 or FP64 destinations. Reductions accumulate in FP64. Source and
@@ -106,8 +103,8 @@ with alignment suitable for `size_t` and `double`; scratch is transient storage,
 not a live unrelated typed-object array. Input, output, and scratch storage must
 not overlap for the operation's duration.
 
-Sparse-to-sparse transforms take an explicit destination orientation. The
-orientation must match the source, and the destination must carry identical
+Sparse-to-sparse transforms take the orientation from each view. The
+orientations must match, and the destination must carry identical
 index and offset structure. Checked transforms validate the destination's
 internal non-overlap and source/destination overlap; trusted calls assume these
 contracts. Dense destinations may use signed strides. `log1p_into`,

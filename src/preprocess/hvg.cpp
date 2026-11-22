@@ -1,10 +1,15 @@
 module;
 #include <stddef.h>
 #include <stdint.h>
+#include "CCell/detail/native_views.hh"
 
 module preprocess.hvg;
 
 namespace preprocess {
+using detail::DType;
+using detail::DenseInput;
+using detail::SparseInput;
+using detail::Layout;
 namespace {
 
 bool add_size(size_t a, size_t b, size_t& c) { return !__builtin_add_overflow(a,b,&c); }
@@ -160,26 +165,36 @@ template<class T, bool checked> HvgStatus dense(const void* values, size_t rows,
     }
     return {};
 }
-template<class T, class I, class O, bool checked> HvgStatus sparse(const void* values, const void* indices, const void* offsets,
-    anndatapp::Layout layout, size_t rows, size_t g, size_t nnz, const size_t* batch, const HvgOptions& o, Work w) {
-    if (!offsets || (nnz && (!values || !indices))) return fail(HvgCode::invalid_argument);
-    const auto* v=static_cast<const unsigned char*>(values); const auto* ix=static_cast<const unsigned char*>(indices);
-    const auto* off=static_cast<const unsigned char*>(offsets); bool csr=layout==anndatapp::Layout::csr;
+template<class T, class I, class O, bool checked> HvgStatus sparse(const SparseInput& x, Layout layout,
+    const size_t* batch, const HvgOptions& o, Work w) {
+    size_t rows=x.rows(), g=x.columns(), nnz=x.nnz();
+    const auto* v=x.values(); const auto* ix=x.indices(); const auto* off=x.offsets();
+    if (!off || (nnz && (!v || !ix))) return fail(HvgCode::invalid_argument);
+    bool csr=layout==Layout::csr;
     size_t major=csr ? rows : g, minor=csr ? g : rows; double multiplier=o.has_log_base ? __builtin_log(o.log_base) : 1;
-    if constexpr (checked) if (load<O>(off)!=0) return fail(HvgCode::invalid_input);
+    uint64_t index_limit=minor, offset_max=nnz;
+    if constexpr (checked) {
+        constexpr uint64_t index_sign=uint64_t(1) << (8*sizeof(I)-1);
+        constexpr uint64_t offset_sign=uint64_t(1) << (8*sizeof(O)-1);
+        if (x.signed_indices && index_limit>index_sign) index_limit=index_sign;
+        if (x.signed_offsets && offset_max>=offset_sign) offset_max=offset_sign-1;
+        if (load<O>(off)!=0) return fail(HvgCode::invalid_input);
+    }
     for (size_t a=0; a<major; ++a) {
-        size_t first=size_t(load<O>(off+a*sizeof(O))), end=size_t(load<O>(off+(a+1)*sizeof(O)));
-        if constexpr (checked) if (first>end || end>nnz) return fail(HvgCode::invalid_input,a);
+        auto begin=load<O>(off+a*sizeof(O)), next=load<O>(off+(a+1)*sizeof(O));
+        if constexpr (checked) if (begin>next || next>offset_max) return fail(HvgCode::invalid_input,a);
+        size_t first=size_t(begin), end=size_t(next);
         size_t prev=0;
         for (size_t k=first; k<end; ++k) {
-            size_t z=size_t(load<I>(ix+k*sizeof(I)));
-            if constexpr (checked) if (z>=minor || (k>first && z<=prev)) return fail(HvgCode::invalid_input,k);
+            auto index=load<I>(ix+k*sizeof(I));
+            if constexpr (checked) if (index>=index_limit || (k>first && index<=prev)) return fail(HvgCode::invalid_input,k);
+            size_t z=size_t(index);
             prev=z; size_t i=csr ? a : z, j=csr ? z : a;
             auto status=add<T,checked>(w,g,i,j,o.batched ? batch[i] : 0,v+k*sizeof(T),o,multiplier);
             if (status.code != HvgCode::ok) return status;
         }
     }
-    if constexpr (checked) if (size_t(load<O>(off+major*sizeof(O)))!=nnz) return fail(HvgCode::invalid_input,major);
+    if constexpr (checked) if (load<O>(off+major*sizeof(O))!=nnz) return fail(HvgCode::invalid_input,major);
     return {};
 }
 
@@ -278,8 +293,8 @@ HvgStatus finish(size_t g, size_t batches, const HvgOptions& o, HvgOutput out, W
     return {};
 }
 
-template<class F> HvgStatus dispatch(anndatapp::DType type, F f) {
-    using D=anndatapp::DType;
+template<class F> HvgStatus dispatch(DType type, F f) {
+    using D=DType;
     switch (type) {
     case D::boolean: return f.template operator()<bool>();
     case D::int8: return f.template operator()<int8_t>();
@@ -292,6 +307,7 @@ template<class F> HvgStatus dispatch(anndatapp::DType type, F f) {
     case D::uint64: return f.template operator()<uint64_t>();
     case D::float32: return f.template operator()<float>();
     case D::float64: return f.template operator()<double>();
+    case D::invalid: break;
     }
     return fail(HvgCode::invalid_argument);
 }
@@ -331,44 +347,46 @@ HvgStatus stage_prepare(size_t rows, size_t genes, const size_t* batch, size_t b
     w.sum=m.sum; w.square=m.square; w.expressed=m.expressed; w.counts=m.counts;
     return {};
 }
-template<bool checked> HvgStatus hvg_accumulate_dense_impl(const void* values, anndatapp::DType type,
-    size_t rows, size_t genes, ptrdiff_t sr, ptrdiff_t sc, const size_t* batch, size_t batches,
+template<bool checked> HvgStatus hvg_accumulate_dense_impl(const DenseInput& x, DType type, const size_t* batch, size_t batches,
     const HvgOptions& o, HvgMoments m) {
+    if (x.rank()!=2) return fail(HvgCode::invalid_argument);
+    size_t rows = x.extent(0), genes = x.extent(1);
+    ptrdiff_t sr = x.stride_bytes(0), sc = x.stride_bytes(1);
+    const auto* values = x.data();
     Work w{}; auto status=stage_prepare(rows,genes,batch,batches,o,m,w);
     if (status.code!=HvgCode::ok || !rows) return status;
     return dispatch(type,[&]<class T>() { return dense<T,checked>(values,rows,genes,sr,sc,batch,o,w); });
 }
-template<bool checked> HvgStatus hvg_accumulate_sparse_impl(const void* values, anndatapp::DType type,
-    const void* indices, const void* offsets, size_t iw, size_t ow, anndatapp::Layout layout,
-    size_t rows, size_t genes, size_t nnz, const size_t* batch, size_t batches, const HvgOptions& o, HvgMoments m) {
-    if ((layout!=anndatapp::Layout::csr && layout!=anndatapp::Layout::csc) || (iw!=4 && iw!=8) || (ow!=4 && ow!=8))
+template<bool checked> HvgStatus hvg_accumulate_sparse_impl(const SparseInput& x, DType type, Layout layout, const size_t* batch, size_t batches,
+    const HvgOptions& o, HvgMoments m) {
+    size_t rows = x.rows(), genes = x.columns();
+    size_t iw = x.index_size(), ow = x.offset_size();
+    if ((layout!=Layout::csr && layout!=Layout::csc) || (iw!=4 && iw!=8) || (ow!=4 && ow!=8))
         return fail(HvgCode::invalid_argument);
     Work w{}; auto status=stage_prepare(rows,genes,batch,batches,o,m,w);
     if (status.code!=HvgCode::ok || !rows) return status;
     return dispatch(type,[&]<class T>() {
-        if (iw==4 && ow==4) return sparse<T,uint32_t,uint32_t,checked>(values,indices,offsets,layout,rows,genes,nnz,batch,o,w);
-        if (iw==4) return sparse<T,uint32_t,uint64_t,checked>(values,indices,offsets,layout,rows,genes,nnz,batch,o,w);
-        if (ow==4) return sparse<T,uint64_t,uint32_t,checked>(values,indices,offsets,layout,rows,genes,nnz,batch,o,w);
-        return sparse<T,uint64_t,uint64_t,checked>(values,indices,offsets,layout,rows,genes,nnz,batch,o,w);
+        if (iw==4 && ow==4) return sparse<T,uint32_t,uint32_t,checked>(x,layout,batch,o,w);
+        if (iw==4) return sparse<T,uint32_t,uint64_t,checked>(x,layout,batch,o,w);
+        if (ow==4) return sparse<T,uint64_t,uint32_t,checked>(x,layout,batch,o,w);
+        return sparse<T,uint64_t,uint64_t,checked>(x,layout,batch,o,w);
     });
 }
-HvgStatus hvg_accumulate_dense(const void* values, anndatapp::DType type, size_t rows, size_t genes,
-    ptrdiff_t sr, ptrdiff_t sc, const size_t* batch, size_t batches, const HvgOptions& o, HvgMoments m) {
-    return hvg_accumulate_dense_impl<true>(values,type,rows,genes,sr,sc,batch,batches,o,m);
+HvgStatus detail::hvg_accumulate_dense(const DenseInput& x, DType type, const size_t* batch, size_t batches,
+    const HvgOptions& o, HvgMoments m) {
+    return hvg_accumulate_dense_impl<true>(x,type,batch,batches,o,m);
 }
-HvgStatus hvg_accumulate_dense_unchecked(const void* values, anndatapp::DType type, size_t rows, size_t genes,
-    ptrdiff_t sr, ptrdiff_t sc, const size_t* batch, size_t batches, const HvgOptions& o, HvgMoments m) {
-    return hvg_accumulate_dense_impl<false>(values,type,rows,genes,sr,sc,batch,batches,o,m);
+HvgStatus detail::hvg_accumulate_dense_unchecked(const DenseInput& x, DType type, const size_t* batch, size_t batches,
+    const HvgOptions& o, HvgMoments m) {
+    return hvg_accumulate_dense_impl<false>(x,type,batch,batches,o,m);
 }
-HvgStatus hvg_accumulate_sparse(const void* values, anndatapp::DType type, const void* indices, const void* offsets,
-    size_t iw, size_t ow, anndatapp::Layout layout, size_t rows, size_t genes, size_t nnz,
-    const size_t* batch, size_t batches, const HvgOptions& o, HvgMoments m) {
-    return hvg_accumulate_sparse_impl<true>(values,type,indices,offsets,iw,ow,layout,rows,genes,nnz,batch,batches,o,m);
+HvgStatus detail::hvg_accumulate_sparse(const SparseInput& x, DType type, Layout layout, const size_t* batch, size_t batches,
+    const HvgOptions& o, HvgMoments m) {
+    return hvg_accumulate_sparse_impl<true>(x,type,layout,batch,batches,o,m);
 }
-HvgStatus hvg_accumulate_sparse_unchecked(const void* values, anndatapp::DType type, const void* indices, const void* offsets,
-    size_t iw, size_t ow, anndatapp::Layout layout, size_t rows, size_t genes, size_t nnz,
-    const size_t* batch, size_t batches, const HvgOptions& o, HvgMoments m) {
-    return hvg_accumulate_sparse_impl<false>(values,type,indices,offsets,iw,ow,layout,rows,genes,nnz,batch,batches,o,m);
+HvgStatus detail::hvg_accumulate_sparse_unchecked(const SparseInput& x, DType type, Layout layout, const size_t* batch, size_t batches,
+    const HvgOptions& o, HvgMoments m) {
+    return hvg_accumulate_sparse_impl<false>(x,type,layout,batch,batches,o,m);
 }
 template<bool checked> HvgStatus hvg_score_impl(const HvgMoments& moments, size_t genes, size_t batches,
     const HvgOptions& o, HvgOutput out, void* scratch, size_t scratch_bytes) {
@@ -408,47 +426,47 @@ HvgStatus hvg_rank_batched(const double* norm, const size_t* nb, size_t genes, s
     for (size_t k=0; k<n; ++k) selected[order[k]]=1;
     return {};
 }
-template<bool checked> HvgStatus hvg_dense_impl(const void* values, anndatapp::DType type, size_t rows, size_t genes,
-    ptrdiff_t sr, ptrdiff_t sc, const size_t* batch, size_t batches, const HvgOptions& o,
-    HvgOutput out, void* scratch, size_t scratch_bytes) {
+template<bool checked> HvgStatus hvg_dense_impl(const DenseInput& x, DType type, const size_t* batch, size_t batches,
+    const HvgOptions& o, HvgOutput out, void* scratch, size_t scratch_bytes) {
+    if (x.rank()!=2) return fail(HvgCode::invalid_argument);
+    size_t rows = x.extent(0), genes = x.extent(1);
+    ptrdiff_t sr = x.stride_bytes(0), sc = x.stride_bytes(1);
+    const auto* values = x.data();
     Work w{}; auto status=prepare(rows,genes,batch,batches,o,out,scratch,scratch_bytes,w);
     if (status.code!=HvgCode::ok) return status;
     status=dispatch(type,[&]<class T>() { return dense<T,checked>(values,rows,genes,sr,sc,batch,o,w); });
     return status.code==HvgCode::ok ? finish(genes,batches,o,out,w) : status;
 }
-template<bool checked> HvgStatus hvg_sparse_impl(const void* values, anndatapp::DType type, const void* indices, const void* offsets,
-    size_t iw, size_t ow, anndatapp::Layout layout, size_t rows, size_t genes, size_t nnz,
-    const size_t* batch, size_t batches, const HvgOptions& o, HvgOutput out, void* scratch, size_t scratch_bytes) {
-    if ((layout!=anndatapp::Layout::csr && layout!=anndatapp::Layout::csc) || (iw!=4 && iw!=8) || (ow!=4 && ow!=8))
+template<bool checked> HvgStatus hvg_sparse_impl(const SparseInput& x, DType type, Layout layout, const size_t* batch, size_t batches,
+    const HvgOptions& o, HvgOutput out, void* scratch, size_t scratch_bytes) {
+    size_t rows = x.rows(), genes = x.columns();
+    size_t iw = x.index_size(), ow = x.offset_size();
+    if ((layout!=Layout::csr && layout!=Layout::csc) || (iw!=4 && iw!=8) || (ow!=4 && ow!=8))
         return fail(HvgCode::invalid_argument);
     Work w{}; auto status=prepare(rows,genes,batch,batches,o,out,scratch,scratch_bytes,w);
     if (status.code!=HvgCode::ok) return status;
     status=dispatch(type,[&]<class T>() {
-        if (iw==4 && ow==4) return sparse<T,uint32_t,uint32_t,checked>(values,indices,offsets,layout,rows,genes,nnz,batch,o,w);
-        if (iw==4) return sparse<T,uint32_t,uint64_t,checked>(values,indices,offsets,layout,rows,genes,nnz,batch,o,w);
-        if (ow==4) return sparse<T,uint64_t,uint32_t,checked>(values,indices,offsets,layout,rows,genes,nnz,batch,o,w);
-        return sparse<T,uint64_t,uint64_t,checked>(values,indices,offsets,layout,rows,genes,nnz,batch,o,w);
+        if (iw==4 && ow==4) return sparse<T,uint32_t,uint32_t,checked>(x,layout,batch,o,w);
+        if (iw==4) return sparse<T,uint32_t,uint64_t,checked>(x,layout,batch,o,w);
+        if (ow==4) return sparse<T,uint64_t,uint32_t,checked>(x,layout,batch,o,w);
+        return sparse<T,uint64_t,uint64_t,checked>(x,layout,batch,o,w);
     });
     return status.code==HvgCode::ok ? finish(genes,batches,o,out,w) : status;
 }
-HvgStatus hvg_dense(const void* values, anndatapp::DType type, size_t rows, size_t genes,
-    ptrdiff_t sr, ptrdiff_t sc, const size_t* batch, size_t batches, const HvgOptions& o,
-    HvgOutput out, void* scratch, size_t scratch_bytes) {
-    return hvg_dense_impl<true>(values,type,rows,genes,sr,sc,batch,batches,o,out,scratch,scratch_bytes);
+HvgStatus detail::hvg_dense(const DenseInput& x, DType type, const size_t* batch, size_t batches,
+    const HvgOptions& o, HvgOutput out, void* scratch, size_t scratch_bytes) {
+    return hvg_dense_impl<true>(x,type,batch,batches,o,out,scratch,scratch_bytes);
 }
-HvgStatus hvg_dense_unchecked(const void* values, anndatapp::DType type, size_t rows, size_t genes,
-    ptrdiff_t sr, ptrdiff_t sc, const size_t* batch, size_t batches, const HvgOptions& o,
-    HvgOutput out, void* scratch, size_t scratch_bytes) {
-    return hvg_dense_impl<false>(values,type,rows,genes,sr,sc,batch,batches,o,out,scratch,scratch_bytes);
+HvgStatus detail::hvg_dense_unchecked(const DenseInput& x, DType type, const size_t* batch, size_t batches,
+    const HvgOptions& o, HvgOutput out, void* scratch, size_t scratch_bytes) {
+    return hvg_dense_impl<false>(x,type,batch,batches,o,out,scratch,scratch_bytes);
 }
-HvgStatus hvg_sparse(const void* values, anndatapp::DType type, const void* indices, const void* offsets,
-    size_t iw, size_t ow, anndatapp::Layout layout, size_t rows, size_t genes, size_t nnz,
-    const size_t* batch, size_t batches, const HvgOptions& o, HvgOutput out, void* scratch, size_t scratch_bytes) {
-    return hvg_sparse_impl<true>(values,type,indices,offsets,iw,ow,layout,rows,genes,nnz,batch,batches,o,out,scratch,scratch_bytes);
+HvgStatus detail::hvg_sparse(const SparseInput& x, DType type, Layout layout, const size_t* batch, size_t batches,
+    const HvgOptions& o, HvgOutput out, void* scratch, size_t scratch_bytes) {
+    return hvg_sparse_impl<true>(x,type,layout,batch,batches,o,out,scratch,scratch_bytes);
 }
-HvgStatus hvg_sparse_unchecked(const void* values, anndatapp::DType type, const void* indices, const void* offsets,
-    size_t iw, size_t ow, anndatapp::Layout layout, size_t rows, size_t genes, size_t nnz,
-    const size_t* batch, size_t batches, const HvgOptions& o, HvgOutput out, void* scratch, size_t scratch_bytes) {
-    return hvg_sparse_impl<false>(values,type,indices,offsets,iw,ow,layout,rows,genes,nnz,batch,batches,o,out,scratch,scratch_bytes);
+HvgStatus detail::hvg_sparse_unchecked(const SparseInput& x, DType type, Layout layout, const size_t* batch, size_t batches,
+    const HvgOptions& o, HvgOutput out, void* scratch, size_t scratch_bytes) {
+    return hvg_sparse_impl<false>(x,type,layout,batch,batches,o,out,scratch,scratch_bytes);
 }
 } // namespace preprocess

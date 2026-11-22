@@ -2,7 +2,7 @@
 
 // Development-only adapter: the reference routines borrow buffers, while the
 // qualification protocol exercises explicit AnnData ownership and annotations.
-inline void run_annotations(anndatapp::Array& a, int mode, std::size_t n, std::size_t g,
+template<class T> void run_annotations(anndatapp::Array& a, int mode, std::size_t n, std::size_t g,
                                        const std::vector<int>& groups) {
     auto data = anndatapp::AnnData::empty(n, g);
     data.set_x(std::move(a));
@@ -39,7 +39,7 @@ inline void run_annotations(anndatapp::Array& a, int mode, std::size_t n, std::s
     qb.log_gene_total = lgt.data(); qb.log_gene_mean = lgm.data();
     qb.group_total = group_total.data(); qb.group_percent = group_pct.data(); qb.group_log_total = group_log.data(); qb.group_capacity = n;
     qb.top_percent = top.data(); qb.top_capacity = top.size();
-    if (!preprocess::qc(data.x().bytes(), data.x().dtype(), qo, qb, scratch.data(), scratch.size()))
+    if (!preprocess::qc(qualification::dense<T>(data.x()), qo, qb, scratch.data(), scratch.size()))
         throw std::runtime_error("annotation QC failed");
     attach(true,"total_counts",ct); attach(true,"n_genes_by_counts",cd);
     attach(true,"log1p_total_counts",lct); attach(true,"log1p_n_genes_by_counts",lcd);
@@ -58,11 +58,11 @@ inline void run_annotations(anndatapp::Array& a, int mode, std::size_t n, std::s
     std::vector<std::uint8_t> included(g);
     preprocess::NormalizationOptions no; no.target_is_set = true; no.target_sum = 100;
     preprocess::NormalizationBuffers nb{factors.data(), n, included.data(), g, norm_scratch.data(), n};
-    if (!preprocess::normalize_into(data.x().bytes(), data.x().dtype(), data.edit_x().bytes(), data.x().dtype(), no, nb))
+    if (!preprocess::normalize_into(qualification::dense<T>(data.x()), qualification::dense<T>(data.edit_x()), no, nb))
         throw std::runtime_error("annotation normalization failed");
     attach(true,"size_factors",factors);
     const double base = mode ? (mode == 1 ? 2.0 : .5) : 0;
-    if (!preprocess::log1p_into(data.x().bytes(), data.x().dtype(), data.edit_x().bytes(), data.x().dtype(), base))
+    if (!preprocess::log1p_into(qualification::dense<T>(data.x()), qualification::dense<T>(data.edit_x()), base))
         throw std::runtime_error("annotation log1p failed");
     auto log_meta = anndatapp::Element::mapping();
     log_meta.set("base", mode ? anndatapp::Element(base) : anndatapp::Element(nullptr));
@@ -78,8 +78,8 @@ inline void run_annotations(anndatapp::Array& a, int mode, std::size_t n, std::s
     if (preprocess::hvg_scratch_bytes(g, 1, ho, hbytes).code != preprocess::HvgCode::ok)
         throw std::runtime_error("annotation HVG scratch failed");
     qualification::Scratch hscratch(hbytes);
-    auto x = data.x().bytes();
-    if (preprocess::hvg_dense(x.data(), data.x().dtype(), n, g, x.stride_bytes(0), x.stride_bytes(1), nullptr, 1,
+    auto x = qualification::dense<T>(data.x());
+    if (preprocess::hvg_dense(x, nullptr, 1,
                               ho, hout, hscratch.data, hbytes).code != preprocess::HvgCode::ok)
         throw std::runtime_error("annotation HVG failed");
     attach(false,"means",hvmean); attach(false,"dispersions",dispersion); attach(false,"dispersions_norm",normdisp);
@@ -92,7 +92,7 @@ inline void run_annotations(anndatapp::Array& a, int mode, std::size_t n, std::s
 
     std::vector<double> scale_mean(g), stddev(g);
     std::vector<std::uint64_t> scale_scratch(g);
-    if (!preprocess::scale_into(data.x().bytes(), data.x().dtype(), data.edit_x().bytes(), data.x().dtype(), {},
+    if (!preprocess::scale_into(qualification::dense<T>(data.x()), qualification::dense<T>(data.edit_x()), {},
                                 scale_mean.data(), stddev.data(), g, scale_scratch.data(), g))
         throw std::runtime_error("annotation scaling failed");
     attach(false,"mean",scale_mean); attach(false,"std",stddev);

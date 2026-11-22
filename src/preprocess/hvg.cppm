@@ -1,9 +1,23 @@
 module;
 #include <stddef.h>
 #include <stdint.h>
+#include "CCell/detail/native_views.hh"
 
 export module preprocess.hvg;
-export import anndatapp.core;
+
+namespace preprocess::detail {
+using ::ccell::detail::DType;
+using ::ccell::detail::Layout;
+using ::ccell::detail::dtype;
+using ::ccell::detail::erase;
+using ::ccell::detail::layout;
+using DenseInput = ::ccell::detail::DenseBytes<const unsigned char>;
+using SparseInput = ::ccell::detail::SparseBytes<const unsigned char>;
+template<class I, class T, class O>
+SparseInput hvg_source(cellerator::tensor::base::CompressedView<I,T,O> x) {
+    return erase(cellerator::tensor::base::CompressedView<I,const T,O>{x.structure,x.values});
+}
+}
 
 export namespace preprocess {
 
@@ -32,6 +46,29 @@ struct HvgMoments {
     size_t capacity = 0, batch_capacity = 0;
 };
 
+}
+
+namespace preprocess::detail {
+HvgStatus hvg_accumulate_dense(const DenseInput&, DType, const size_t* batch, size_t batches,
+    const HvgOptions&, HvgMoments);
+HvgStatus hvg_accumulate_dense_unchecked(const DenseInput&, DType, const size_t* batch, size_t batches,
+    const HvgOptions&, HvgMoments);
+HvgStatus hvg_accumulate_sparse(const SparseInput&, DType, Layout, const size_t* batch, size_t batches,
+    const HvgOptions&, HvgMoments);
+HvgStatus hvg_accumulate_sparse_unchecked(const SparseInput&, DType, Layout, const size_t* batch, size_t batches,
+    const HvgOptions&, HvgMoments);
+HvgStatus hvg_dense(const DenseInput&, DType, const size_t* batch, size_t batches,
+    const HvgOptions&, HvgOutput, void* scratch, size_t scratch_bytes);
+HvgStatus hvg_sparse(const SparseInput&, DType, Layout, const size_t* batch, size_t batches,
+    const HvgOptions&, HvgOutput, void* scratch, size_t scratch_bytes);
+HvgStatus hvg_dense_unchecked(const DenseInput&, DType, const size_t* batch, size_t batches,
+    const HvgOptions&, HvgOutput, void* scratch, size_t scratch_bytes);
+HvgStatus hvg_sparse_unchecked(const SparseInput&, DType, Layout, const size_t* batch, size_t batches,
+    const HvgOptions&, HvgOutput, void* scratch, size_t scratch_bytes);
+}
+
+export namespace preprocess {
+
 // Scratch is suitably aligned raw or byte storage permitting implicit-lifetime
 // double and size_t objects, aligned to alignof(size_t) and alignof(double).
 // Batch codes are contiguous [0,batches), caller-chosen; every batch is used.
@@ -52,18 +89,26 @@ HvgStatus hvg_moments_clear(size_t genes, size_t batches, HvgMoments);
 // Add source into destination. Both refer to the same gene/batch order; arrays
 // may be identical pairwise or disjoint, and counts must not overflow.
 HvgStatus hvg_moments_merge(size_t genes, size_t batches, HvgMoments destination, const HvgMoments& source);
-HvgStatus hvg_accumulate_dense(const void* values, anndatapp::DType, size_t rows, size_t genes,
-    ptrdiff_t row_stride_bytes, ptrdiff_t gene_stride_bytes, const size_t* batch, size_t batches,
-    const HvgOptions&, HvgMoments);
-HvgStatus hvg_accumulate_dense_unchecked(const void* values, anndatapp::DType, size_t rows, size_t genes,
-    ptrdiff_t row_stride_bytes, ptrdiff_t gene_stride_bytes, const size_t* batch, size_t batches,
-    const HvgOptions&, HvgMoments);
-HvgStatus hvg_accumulate_sparse(const void* values, anndatapp::DType, const void* indices, const void* offsets,
-    size_t index_width, size_t offset_width, anndatapp::Layout, size_t rows, size_t genes,
-    size_t nnz, const size_t* batch, size_t batches, const HvgOptions&, HvgMoments);
-HvgStatus hvg_accumulate_sparse_unchecked(const void* values, anndatapp::DType, const void* indices, const void* offsets,
-    size_t index_width, size_t offset_width, anndatapp::Layout, size_t rows, size_t genes,
-    size_t nnz, const size_t* batch, size_t batches, const HvgOptions&, HvgMoments);
+template<class T, class S>
+HvgStatus hvg_accumulate_dense(cellerator::memory::const_matrix_view<T,S> view, const size_t* batch, size_t batches,
+    const HvgOptions& options, HvgMoments moments) {
+    return detail::hvg_accumulate_dense(detail::erase(view),detail::dtype<T>(),batch,batches,options,moments);
+}
+template<class T, class S>
+HvgStatus hvg_accumulate_dense_unchecked(cellerator::memory::const_matrix_view<T,S> view, const size_t* batch, size_t batches,
+    const HvgOptions& options, HvgMoments moments) {
+    return detail::hvg_accumulate_dense_unchecked(detail::erase(view),detail::dtype<T>(),batch,batches,options,moments);
+}
+template<class I, class T, class O>
+HvgStatus hvg_accumulate_sparse(cellerator::tensor::base::CompressedView<I,T,O> view, const size_t* batch, size_t batches,
+    const HvgOptions& options, HvgMoments moments) {
+    return detail::hvg_accumulate_sparse(detail::hvg_source(view),detail::dtype<T>(),detail::layout(view),batch,batches,options,moments);
+}
+template<class I, class T, class O>
+HvgStatus hvg_accumulate_sparse_unchecked(cellerator::tensor::base::CompressedView<I,T,O> view, const size_t* batch, size_t batches,
+    const HvgOptions& options, HvgMoments moments) {
+    return detail::hvg_accumulate_sparse_unchecked(detail::hvg_source(view),detail::dtype<T>(),detail::layout(view),batch,batches,options,moments);
+}
 // Score caller-constructed moments without copying them. Input/scratch/output
 // must be disjoint. Each batch must have nonzero count. Use the scoring scratch
 // query; it excludes input moments and requires the alignment documented above.
@@ -72,22 +117,28 @@ HvgStatus hvg_score(const HvgMoments&, size_t genes, size_t batches, const HvgOp
     HvgOutput, void* scratch, size_t scratch_bytes);
 HvgStatus hvg_score_unchecked(const HvgMoments&, size_t genes, size_t batches, const HvgOptions&,
     HvgOutput, void* scratch, size_t scratch_bytes);
-HvgStatus hvg_dense(const void* values, anndatapp::DType, size_t rows, size_t genes,
-    ptrdiff_t row_stride_bytes, ptrdiff_t gene_stride_bytes, const size_t* batch, size_t batches,
-    const HvgOptions&, HvgOutput, void* scratch, size_t scratch_bytes);
-HvgStatus hvg_sparse(const void* values, anndatapp::DType, const void* indices, const void* offsets,
-    size_t index_width, size_t offset_width, anndatapp::Layout, size_t rows, size_t genes,
-    size_t nnz, const size_t* batch, size_t batches, const HvgOptions&, HvgOutput,
-    void* scratch, size_t scratch_bytes);
+template<class T, class S>
+HvgStatus hvg_dense(cellerator::memory::const_matrix_view<T,S> view, const size_t* batch, size_t batches,
+    const HvgOptions& options, HvgOutput output, void* scratch, size_t scratch_bytes) {
+    return detail::hvg_dense(detail::erase(view),detail::dtype<T>(),batch,batches,options,output,scratch,scratch_bytes);
+}
+template<class I, class T, class O>
+HvgStatus hvg_sparse(cellerator::tensor::base::CompressedView<I,T,O> view, const size_t* batch, size_t batches,
+    const HvgOptions& options, HvgOutput output, void* scratch, size_t scratch_bytes) {
+    return detail::hvg_sparse(detail::hvg_source(view),detail::dtype<T>(),detail::layout(view),batch,batches,options,output,scratch,scratch_bytes);
+}
 
 // Trusted variants omit value and sparse-structure checks. The caller supplies
 // finite, nonnegative transformed values and canonical compressed structures.
-HvgStatus hvg_dense_unchecked(const void* values, anndatapp::DType, size_t rows, size_t genes,
-    ptrdiff_t row_stride_bytes, ptrdiff_t gene_stride_bytes, const size_t* batch, size_t batches,
-    const HvgOptions&, HvgOutput, void* scratch, size_t scratch_bytes);
-HvgStatus hvg_sparse_unchecked(const void* values, anndatapp::DType, const void* indices, const void* offsets,
-    size_t index_width, size_t offset_width, anndatapp::Layout, size_t rows, size_t genes,
-    size_t nnz, const size_t* batch, size_t batches, const HvgOptions&, HvgOutput,
-    void* scratch, size_t scratch_bytes);
+template<class T, class S>
+HvgStatus hvg_dense_unchecked(cellerator::memory::const_matrix_view<T,S> view, const size_t* batch, size_t batches,
+    const HvgOptions& options, HvgOutput output, void* scratch, size_t scratch_bytes) {
+    return detail::hvg_dense_unchecked(detail::erase(view),detail::dtype<T>(),batch,batches,options,output,scratch,scratch_bytes);
+}
+template<class I, class T, class O>
+HvgStatus hvg_sparse_unchecked(cellerator::tensor::base::CompressedView<I,T,O> view, const size_t* batch, size_t batches,
+    const HvgOptions& options, HvgOutput output, void* scratch, size_t scratch_bytes) {
+    return detail::hvg_sparse_unchecked(detail::hvg_source(view),detail::dtype<T>(),detail::layout(view),batch,batches,options,output,scratch,scratch_bytes);
+}
 
 } // namespace preprocess

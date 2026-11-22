@@ -10,7 +10,11 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
+#include <Cellerator/memory/view.hh>
+#include <Cellerator/tensor/base/compressed.hh>
 
+import anndata;
+import ccell.interop.anndata;
 import preprocess;
 
 #include "qualification_helpers.hpp"
@@ -127,14 +131,16 @@ void run(const std::string& operation, int layout, int mode, std::size_t n, std:
     }
     if (operation == "annotations") {
         if (layout != 0 || std::is_integral_v<T>) throw std::invalid_argument("annotations require dense floating input");
-        run_annotations(a, mode, n, g, group_values);
+        run_annotations<T>(a, mode, n, g, group_values);
         return;
     }
     auto x = a.view();
     std::vector<std::uint8_t> mask(n);
     for (std::size_t i=0; i<n; ++i) mask[i] = observation_values[i] != 0;
     if (operation == "qc" || operation == "filters") {
-        qualification::Qc q(x, group_values);
+        auto q = qualification::visit<T>(x,[&](auto view) {
+            return qualification::Qc(view,n,g,group_values);
+        });
         if (operation == "filters") {
             preprocess::FilterBounds cells{true,true,true,true,4,10000,2,g};
             preprocess::FilterBounds genes{true,true,true,true,5,10000,2,n};
@@ -154,9 +160,9 @@ void run(const std::string& operation, int layout, int mode, std::size_t n, std:
     } else if (operation == "stats") {
         std::vector<double> mean(g), variance(g); std::vector<std::uint64_t> scratch(g); std::size_t observations=0;
         const auto* m = mode ? mask.data() : nullptr;
-        auto status = x.layout() == anndatapp::Layout::dense
-          ? preprocess::feature_stats(x.bytes(),x.dtype(),m,mean.data(),variance.data(),g,scratch.data(),scratch.size(),&observations)
-          : preprocess::feature_stats(x.sparse_bytes(),x.dtype(),x.layout(),m,mean.data(),variance.data(),g,scratch.data(),scratch.size(),&observations);
+        auto status = qualification::visit<T>(x,[&](auto view) {
+            return preprocess::feature_stats(view,m,mean.data(),variance.data(),g,scratch.data(),scratch.size(),&observations);
+        });
         if (!status) throw std::runtime_error("feature_stats failed");
         emit("mean",mean); emit("variance",variance);
     } else if (operation == "hvg") {
@@ -164,34 +170,41 @@ void run(const std::string& operation, int layout, int mode, std::size_t n, std:
         o.method=(mode & 1) ? preprocess::HvgMethod::cell_ranger : preprocess::HvgMethod::seurat;
         o.n_bins=10; o.has_top=!(mode & 4); o.n_top_genes=12; o.batched=mode & 2;
         o.has_log_base=mode & (8|16); o.log_base=(mode & 8) ? 2 : .5;
-        qualification::Hvg h(x,batch_values,o);
+        auto h = qualification::visit<T>(x,[&](auto view) {
+            return qualification::Hvg(view,n,g,batch_values,o);
+        });
         emit("mean",h.mean); emit("dispersion",h.dispersion); emit("normalized_dispersion",h.normalized_dispersion);
         emit("selected",h.selected); if (o.batched) { emit("nbatches",h.nbatches); emit("intersection",h.intersection); }
     } else if (operation == "normalize" || operation == "normalize_into" || operation == "log1p" || operation == "log1p_into" || operation == "scale") {
         const bool single = operation == "normalize_into" || operation == "log1p_into" || (std::is_same_v<T,float> && !(operation == "scale" && layout != 0 && layout != 3));
         anndatapp::Array output = single ? anndatapp::Array::empty<float>({n,g}) : anndatapp::Array::empty<double>({n,g});
-        auto y=output.edit(); auto dst=y.bytes(); const auto dt=output.dtype(); preprocess::QcStatus status;
+        auto y=output.edit(); preprocess::QcStatus status;
+        auto transform = [&](auto operation) {
+            return qualification::visit<T>(x,[&](auto view) {
+                return single ? operation(view,qualification::dense<float>(y))
+                              : operation(view,qualification::dense<double>(y));
+            });
+        };
         if (operation == "normalize" || operation == "normalize_into") {
             preprocess::NormalizationOptions o; o.target_is_set=mode!=1; o.target_sum=100;
             o.exclude_highly_expressed=mode==2; o.max_fraction=.2;
             std::vector<double> factors(n), scratch(n); std::vector<std::uint8_t> included(g);
             preprocess::NormalizationBuffers b{factors.data(),n,included.data(),g,scratch.data(),n};
-            status=x.layout()==anndatapp::Layout::dense ? preprocess::normalize_into(x.bytes(),x.dtype(),dst,dt,o,b)
-              : preprocess::normalize_into(x.sparse_bytes(),x.dtype(),x.layout(),dst,dt,o,b);
+            status=transform([&](auto view,auto dst) { return preprocess::normalize_into(view,dst,o,b); });
             if (!status) throw std::runtime_error("normalize failed");
             emit_matrix(output.view()); emit("factors",factors); emit("included",included);
             std::cout << "target 1 1 " << b.target_sum << '\n';
         } else if (operation == "log1p" || operation == "log1p_into") {
             double base=mode ? (mode==1 ? 2.0 : .5) : 0;
-            status=x.layout()==anndatapp::Layout::dense ? preprocess::log1p_into(x.bytes(),x.dtype(),dst,dt,base)
-              : preprocess::log1p_into(x.sparse_bytes(),x.dtype(),x.layout(),dst,dt,base);
+            status=transform([&](auto view,auto dst) { return preprocess::log1p_into(view,dst,base); });
             if (!status) throw std::runtime_error("log1p failed"); emit_matrix(output.view());
         } else {
             preprocess::ScaleOptions o; o.zero_center=mode!=1; o.clip=mode!=0; o.max_value=3;
             o.observations=mode==2 ? mask.data() : nullptr;
             std::vector<double> mean(g), dev(g); std::vector<std::uint64_t> scratch(g);
-            status=x.layout()==anndatapp::Layout::dense ? preprocess::scale_into(x.bytes(),x.dtype(),dst,dt,o,mean.data(),dev.data(),g,scratch.data(),g)
-              : preprocess::scale_into(x.sparse_bytes(),x.dtype(),x.layout(),dst,dt,o,mean.data(),dev.data(),g,scratch.data(),g);
+            status=transform([&](auto view,auto dst) {
+                return preprocess::scale_into(view,dst,o,mean.data(),dev.data(),g,scratch.data(),g);
+            });
             if (!status) throw std::runtime_error("scale failed"); emit_matrix(output.view()); emit("mean",mean); emit("stddev",dev);
         }
     } else throw std::invalid_argument("unknown operation");

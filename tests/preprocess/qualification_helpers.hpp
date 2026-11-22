@@ -7,6 +7,28 @@
 #include <vector>
 
 namespace qualification {
+template<class T> auto dense(const anndatapp::ArrayView& array) {
+    cellerator::memory::const_matrix_view<T,std::ptrdiff_t> x;
+    if (ccell::io::borrow_dense(array,x) != ccell::io::BorrowCode::ok)
+        throw std::runtime_error("dense input binding failed");
+    return x;
+}
+template<class T> auto dense(const anndatapp::ArrayEdit& array) {
+    cellerator::memory::matrix_view<T,std::ptrdiff_t> x;
+    if (ccell::io::borrow_dense(array,x) != ccell::io::BorrowCode::ok)
+        throw std::runtime_error("dense output binding failed");
+    return x;
+}
+template<class T, class Operation> auto visit(const anndatapp::ArrayView& array, Operation operation) {
+    if (array.layout() == anndatapp::Layout::dense) return operation(dense<T>(array));
+    using Axis = cellerator::tensor::base::CompressedAxis;
+    cellerator::tensor::base::CompressedView<std::int32_t,const T,std::int64_t> x;
+    Axis axis = array.layout() == anndatapp::Layout::csr ? Axis::row : Axis::column;
+    if (ccell::io::borrow_compressed(array,axis,x) != ccell::io::BorrowCode::ok)
+        throw std::runtime_error("compressed input binding failed");
+    return operation(x);
+}
+
 // Byte arrays provide storage in which the kernel may create scalar objects.
 struct Scratch {
     std::vector<std::byte> storage;
@@ -26,7 +48,7 @@ struct Qc {
     std::size_t tops[3]{2,4,8};
     preprocess::QcOptions options;
     preprocess::QcBuffers buffers;
-    Qc(anndatapp::ArrayView x, const std::vector<int>& groups) : n(x.extent(0)), g(x.extent(1)),
+    template<class View> Qc(View x, std::size_t rows, std::size_t genes, const std::vector<int>& groups) : n(rows), g(genes),
         cell_total(n), gene_total(g), mean(g), dropout(g), log_cell_total(n), log_cell_detected(n),
         log_gene_total(g), log_gene_mean(g), group_total(n), group_percent(n), group_log_total(n), top_percent(n*3), scratch(g),
         cell_detected(n), gene_detected(g), mask(g) {
@@ -39,9 +61,7 @@ struct Qc {
         buffers.log_gene_mean=log_gene_mean.data(); buffers.group_total=group_total.data();
         buffers.group_percent=group_percent.data(); buffers.group_log_total=group_log_total.data(); buffers.group_capacity=n;
         buffers.top_percent=top_percent.data(); buffers.top_capacity=n*3;
-        auto s = x.layout() == anndatapp::Layout::dense
-          ? preprocess::qc(x.bytes(), x.dtype(), options, buffers, scratch.data(), scratch.size())
-          : preprocess::qc(x.sparse_bytes(), x.dtype(), x.layout(), options, buffers, scratch.data(), scratch.size());
+        auto s = preprocess::qc(x, options, buffers, scratch.data(), scratch.size());
         if (!s) throw std::runtime_error("QC failed");
     }
 };
@@ -49,25 +69,23 @@ struct Hvg {
     std::vector<double> mean, dispersion, normalized_dispersion;
     std::vector<std::uint8_t> selected, intersection;
     std::vector<std::size_t> nbatches, batch;
-    Hvg(anndatapp::ArrayView x, const std::vector<std::int32_t>& batches, preprocess::HvgOptions options) :
-      mean(x.extent(1)), dispersion(x.extent(1)), normalized_dispersion(x.extent(1)),
-      selected(x.extent(1)), intersection(x.extent(1)), nbatches(x.extent(1)), batch(x.extent(0)) {
+    template<class View> Hvg(View x, std::size_t rows, std::size_t genes,
+                             const std::vector<std::int32_t>& batches, preprocess::HvgOptions options) :
+      mean(genes), dispersion(genes), normalized_dispersion(genes),
+      selected(genes), intersection(genes), nbatches(genes), batch(rows) {
         std::vector<std::int32_t> codes;
         if (options.batched) for (std::size_t i=0; i<batch.size(); ++i) {
             std::size_t j=0; for (; j<codes.size() && codes[j]!=batches[i]; ++j) {}
             if (j==codes.size()) codes.push_back(batches[i]); batch[i]=j;
         }
         std::size_t count=options.batched ? codes.size() : 1, bytes=0;
-        auto s=preprocess::hvg_scratch_bytes(x.extent(1),count,options,bytes);
+        auto s=preprocess::hvg_scratch_bytes(genes,count,options,bytes);
         if (s.code!=preprocess::HvgCode::ok) throw std::runtime_error("HVG sizing failed");
         Scratch scratch(bytes);
-        preprocess::HvgOutput out{mean.data(),dispersion.data(),normalized_dispersion.data(),selected.data(),intersection.data(),nbatches.data(),x.extent(1)};
+        preprocess::HvgOutput out{mean.data(),dispersion.data(),normalized_dispersion.data(),selected.data(),intersection.data(),nbatches.data(),genes};
         const auto* b=options.batched ? batch.data() : nullptr;
-        if (x.layout()==anndatapp::Layout::dense) {
-            auto a=x.bytes(); s=preprocess::hvg_dense(a.data(),x.dtype(),x.extent(0),x.extent(1),a.stride_bytes(0),a.stride_bytes(1),b,count,options,out,scratch.data,bytes);
-        } else {
-            auto a=x.sparse_bytes(); s=preprocess::hvg_sparse(a.values(),x.dtype(),a.indices(),a.offsets(),a.index_size(),a.offset_size(),x.layout(),x.extent(0),x.extent(1),a.nnz(),b,count,options,out,scratch.data,bytes);
-        }
+        if constexpr (requires { x.structure; }) s=preprocess::hvg_sparse(x,b,count,options,out,scratch.data,bytes);
+        else s=preprocess::hvg_dense(x,b,count,options,out,scratch.data,bytes);
         if (s.code!=preprocess::HvgCode::ok) throw std::runtime_error("HVG calculation failed");
     }
 };

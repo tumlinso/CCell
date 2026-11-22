@@ -6,6 +6,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <new>
+#include <Cellerator/memory/view.hh>
+#include <Cellerator/tensor/base/compressed.hh>
 
 #if defined(__has_feature)
 #if __has_feature(address_sanitizer)
@@ -18,7 +20,6 @@
 
 #if defined(__linux__) && defined(__GLIBC__)
 import preprocess;
-import anndatapp.core;
 
 #if !defined(CCELL_NO_ALLOCATION_INTERPOSITION)
 static std::atomic<bool> measuring{false};
@@ -75,7 +76,11 @@ template<class F> void measure_void(const char* name, F f) {
 static void expect(bool ok, const char* name) { if (!ok) { std::fprintf(stderr,"unexpected result: %s\n",name); ++failures; } }
 
 int main() {
-    namespace a = anndatapp; namespace p = preprocess;
+    namespace p = preprocess;
+    using cellerator::memory::const_matrix_view;
+    using cellerator::memory::matrix_view;
+    using cellerator::tensor::base::CompressedAxis;
+    using cellerator::tensor::base::CompressedView;
 #if defined(CCELL_NO_ALLOCATION_INTERPOSITION)
     std::fprintf(stderr, "Allocation measurement disabled under AddressSanitizer; exercising numerical behavior only.\n");
 #else
@@ -93,21 +98,21 @@ int main() {
     expect(c_calls.load() >= 6 && cpp_calls.load() >= 3, "allocator interception sanity");
 #endif
 
-    auto x = a::Array::empty<double>({4,4}); auto y = a::Array::empty<double>({4,4});
-    double* values = x.edit().dense<double>().data();
+    double values[16], result[16];
     for (size_t i=0;i<16;++i) values[i] = .1*double((i*7)%13+1);
-    auto dense = x.view().bytes(); auto output = y.edit().bytes();
-    auto sx = a::Array::csr<double,int32_t,int64_t>(4,4,16);
-    auto sy = a::Array::csr<double,int32_t,int64_t>(4,4,16);
-    auto sv = sx.edit().csr<double,int32_t,int64_t>(); auto tv = sy.edit().csr<double,int32_t,int64_t>();
-    auto* si = sv.unsafe_indices(); auto* so = sv.unsafe_offsets();
-    auto* ti = tv.unsafe_indices(); auto* to = tv.unsafe_offsets();
-    for (size_t i=0;i<4;++i) { so[i]=to[i]=int64_t(4*i); for (size_t j=0;j<4;++j) { size_t k=4*i+j; si[k]=ti[k]=int32_t(j); sv.values()[k]=values[k]; tv.values()[k]=0; } }
-    so[4]=to[4]=16;
-    auto sparse = sx.view().sparse_bytes(); auto sparse_out = sy.edit().sparse_bytes();
-    auto empty_x = a::Array::empty<double>({0,0}); auto empty = empty_x.view().bytes();
-    auto empty_y = a::Array::empty<double>({0,0}); auto empty_out = empty_y.edit().bytes();
-    constexpr auto dt = a::DType::float64; constexpr auto csr = a::Layout::csr;
+    const_matrix_view<double> dense{values,4,4,4};
+    matrix_view<double> output{result,4,4,4};
+    int32_t indices[16];
+    int64_t offsets[5];
+    for (size_t i=0;i<4;++i) {
+        offsets[i]=int64_t(4*i);
+        for (size_t j=0;j<4;++j) indices[4*i+j]=int32_t(j);
+    }
+    offsets[4]=16;
+    CompressedView<int32_t,const double,int64_t> sparse{{4,4,16,CompressedAxis::row,offsets,indices},values};
+    CompressedView<int32_t,double,int64_t> sparse_out{sparse.structure,result};
+    const_matrix_view<double> empty;
+    matrix_view<double> empty_out;
 
     double ct[4]{}, gt[4]{}, mean[4]{}, drop[4]{}, lct[4]{}, lcd[4]{}, lgt[4]{}, lgm[4]{};
     double groups[4]{}, group_pct[4]{}, group_log[4]{}, tops[8]{}, scratch[4]{}, var[4]{};
@@ -120,95 +125,103 @@ int main() {
     qb.group_total=groups; qb.group_percent=group_pct; qb.group_log_total=group_log; qb.group_capacity=4;
     qb.top_percent=tops; qb.top_capacity=8;
     expect(bool(measure("qc check",[&]{return p::qc_check(4,4,qo,qb,4); })),"qc check");
-    expect(bool(measure("qc validate dense",[&]{return p::qc_validate(dense,dt,true);})),"qc validate dense");
-    expect(bool(measure("qc validate csr",[&]{return p::qc_validate(sparse,dt,csr,true);})),"qc validate csr");
+    expect(bool(measure("qc validate dense",[&]{return p::qc_validate(dense,true);})),"qc validate dense");
+    expect(bool(measure("qc validate csr",[&]{return p::qc_validate(sparse,true);})),"qc validate csr");
     expect(!bool(measure("qc capacity",[&]{return p::qc_check(4,4,qo,qb,0); })),"qc capacity");
     measure_void("qc zero",[&]{p::qc_zero(4,4,1,qb);});
     ct[0] = 42; scratch[0] = 47;
-    auto qc_short = measure("qc partial dense capacity",[&]{return p::qc_accumulate(dense,dt,0,4,qo,qb,scratch,0);});
+    auto qc_short = measure("qc partial dense capacity",[&]{return p::qc_accumulate(dense,0,4,qo,qb,scratch,0);});
     expect(qc_short.code == p::QcCode::insufficient_capacity && ct[0] == 42 && scratch[0] == 47,"qc partial dense capacity preflight");
-    qc_short = measure("qc partial csr capacity",[&]{return p::qc_accumulate(sparse,dt,csr,0,4,qo,qb,scratch,0);});
+    qc_short = measure("qc partial csr capacity",[&]{return p::qc_accumulate(sparse,0,4,qo,qb,scratch,0);});
     expect(qc_short.code == p::QcCode::insufficient_capacity && ct[0] == 42 && scratch[0] == 47,"qc partial csr capacity preflight");
     measure_void("qc zero after short",[&]{p::qc_zero(4,4,1,qb);});
-    expect(bool(measure("qc partial dense",[&]{return p::qc_accumulate(dense,dt,0,4,qo,qb,scratch,4);})),"qc partial dense");
+    expect(bool(measure("qc partial dense",[&]{return p::qc_accumulate(dense,0,4,qo,qb,scratch,4);})),"qc partial dense");
     measure_void("qc zero sparse",[&]{p::qc_zero(4,4,1,qb);});
-    expect(bool(measure("qc partial csr",[&]{return p::qc_accumulate(sparse,dt,csr,0,4,qo,qb,scratch,4);})),"qc partial csr");
+    expect(bool(measure("qc partial csr",[&]{return p::qc_accumulate(sparse,0,4,qo,qb,scratch,4);})),"qc partial csr");
     measure_void("qc zero unchecked dense",[&]{p::qc_zero(4,4,1,qb);});
-    expect(bool(measure("qc unchecked dense",[&]{return p::qc_accumulate_unchecked(dense,dt,0,4,qo,qb,scratch);})),"qc unchecked dense");
+    expect(bool(measure("qc unchecked dense",[&]{return p::qc_accumulate_unchecked(dense,0,4,qo,qb,scratch);})),"qc unchecked dense");
     measure_void("qc zero unchecked csr",[&]{p::qc_zero(4,4,1,qb);});
-    expect(bool(measure("qc unchecked csr",[&]{return p::qc_accumulate_unchecked(sparse,dt,csr,0,4,qo,qb,scratch);})),"qc unchecked csr");
+    expect(bool(measure("qc unchecked csr",[&]{return p::qc_accumulate_unchecked(sparse,0,4,qo,qb,scratch);})),"qc unchecked csr");
     measure_void("qc finalize",[&]{p::qc_finish(4,4,qo,qb);});
     double mt[4]{}; uint64_t md[4]{};
     measure_void("qc merge",[&]{p::qc_merge(4,mt,md,gt,gd);});
     for (int i=0;i<2;++i) {
-        expect(bool(measure("qc dense",[&]{return p::qc(dense,dt,qo,qb,scratch,4);})),"qc dense");
-        expect(bool(measure("qc csr",[&]{return p::qc(sparse,dt,csr,qo,qb,scratch,4);})),"qc csr");
+        expect(bool(measure("qc dense",[&]{return p::qc(dense,qo,qb,scratch,4);})),"qc dense");
+        expect(bool(measure("qc csr",[&]{return p::qc(sparse,qo,qb,scratch,4);})),"qc csr");
     }
-    auto qs=measure("qc invalid dtype",[&]{return p::qc(dense,static_cast<a::DType>(255),qo,qb,scratch,4);}); expect(!bool(qs),"qc invalid dtype");
+    auto invalid_dense=dense; invalid_dense.data=nullptr;
+    auto qs=measure("qc missing data",[&]{return p::qc(invalid_dense,qo,qb,scratch,4);});
+    expect(qs.code==p::QcCode::invalid_argument,"qc missing data");
+    const long double unsupported_values[16]={};
+    const_matrix_view<long double> unsupported{unsupported_values,4,4,4};
+    qs=measure("qc unsupported dtype",[&]{return p::qc(unsupported,qo,qb,scratch,4);});
+    expect(qs.code==p::QcCode::unsupported_type,"qc unsupported dtype");
     p::QcOptions empty_options; p::QcBuffers empty_outputs;
-    measure("qc empty",[&]{return p::qc(empty,dt,empty_options,empty_outputs,nullptr,0);});
+    expect(bool(measure("qc empty",[&]{return p::qc(empty,empty_options,empty_outputs,nullptr,0);})),"qc empty");
     p::FilterBounds fb; fb.has_min_counts=true; fb.min_counts=0;
     expect(bool(measure("filter",[&]{return p::filter(ct,cd,4,fb,keep,4);})),"filter");
     expect(!bool(measure("filter capacity",[&]{return p::filter(ct,cd,4,fb,keep,0);})),"filter capacity");
     size_t observed=0;
-    expect(bool(measure("stats dense",[&]{return p::feature_stats(dense,dt,nullptr,mean,var,4,counts,4,&observed);})),"stats dense");
-    expect(bool(measure("stats csr",[&]{return p::feature_stats(sparse,dt,csr,nullptr,mean,var,4,counts,4,&observed);})),"stats csr");
-    expect(bool(measure("stats dense unchecked",[&]{return p::feature_stats_unchecked(dense,dt,nullptr,mean,var,4,counts,4,&observed);})),"stats dense unchecked");
-    expect(bool(measure("stats csr unchecked",[&]{return p::feature_stats_unchecked(sparse,dt,csr,nullptr,mean,var,4,counts,4,&observed);})),"stats csr unchecked");
+    expect(bool(measure("stats dense",[&]{return p::feature_stats(dense,nullptr,mean,var,4,counts,4,&observed);})),"stats dense");
+    expect(bool(measure("stats csr",[&]{return p::feature_stats(sparse,nullptr,mean,var,4,counts,4,&observed);})),"stats csr");
+    expect(bool(measure("stats dense unchecked",[&]{return p::feature_stats_unchecked(dense,nullptr,mean,var,4,counts,4,&observed);})),"stats dense unchecked");
+    expect(bool(measure("stats csr unchecked",[&]{return p::feature_stats_unchecked(sparse,nullptr,mean,var,4,counts,4,&observed);})),"stats csr unchecked");
     double pm1[4]{}, pm2[4]{}, pv1[4]{}, pv2[4]{};
     p::StatsPartial partial1{0,4,pm1,pv1,4}, partial2{0,4,pm2,pv2,4};
-    expect(bool(measure("stats partial dense",[&]{return p::stats_partial(dense,dt,0,2,nullptr,partial1,counts,4);})),"stats partial dense");
-    expect(bool(measure("stats partial csr",[&]{return p::stats_partial(sparse,dt,csr,2,4,nullptr,partial2,counts,4);})),"stats partial csr");
+    expect(bool(measure("stats partial dense",[&]{return p::stats_partial(dense,0,2,nullptr,partial1,counts,4);})),"stats partial dense");
+    expect(bool(measure("stats partial csr",[&]{return p::stats_partial(sparse,2,4,nullptr,partial2,counts,4);})),"stats partial csr");
     expect(bool(measure("stats merge",[&]{return p::stats_merge(partial1,partial2);})),"stats merge");
     expect(bool(measure("stats finish",[&]{return p::stats_finish(partial1,var,4);})),"stats finish");
-    expect(!bool(measure("stats capacity",[&]{return p::feature_stats(dense,dt,nullptr,mean,var,0,counts,4,&observed);})),"stats capacity");
-    measure("stats empty",[&]{return p::feature_stats(empty,dt,nullptr,nullptr,nullptr,0,nullptr,0,&observed);});
+    expect(!bool(measure("stats capacity",[&]{return p::feature_stats(dense,nullptr,mean,var,0,counts,4,&observed);})),"stats capacity");
+    expect(bool(measure("stats empty",[&]{return p::feature_stats(empty,nullptr,nullptr,nullptr,0,nullptr,0,&observed);})) && observed==0,"stats empty");
 
     double factors[4]{}, nwork[4]{}, scales[4]{}; uint8_t included[4]{};
     p::NormalizationOptions no; no.target_is_set=true; no.target_sum=10;
     p::NormalizationBuffers nb{factors,4,included,4,nwork,4,1};
-    expect(bool(measure("normalization prepare dense",[&]{return p::normalization_factors(dense,dt,no,nb);})),"normalization prepare dense");
-    expect(bool(measure("normalization prepare csr",[&]{return p::normalization_factors(sparse,dt,csr,no,nb);})),"normalization prepare csr");
+    expect(bool(measure("normalization prepare dense",[&]{return p::normalization_factors(dense,no,nb);})),"normalization prepare dense");
+    expect(bool(measure("normalization prepare csr",[&]{return p::normalization_factors(sparse,no,nb);})),"normalization prepare csr");
     auto automatic=no; automatic.target_is_set=false;
-    expect(bool(measure("normalization automatic target",[&]{return p::normalization_factors(dense,dt,automatic,nb);})),"normalization automatic target");
+    expect(bool(measure("normalization automatic target",[&]{return p::normalization_factors(dense,automatic,nb);})),"normalization automatic target");
     auto short_nb=nb; short_nb.scratch_capacity=0;
-    expect(!bool(measure("normalization capacity",[&]{return p::normalization_factors(dense,dt,automatic,short_nb);})),"normalization capacity");
+    expect(!bool(measure("normalization capacity",[&]{return p::normalization_factors(dense,automatic,short_nb);})),"normalization capacity");
     p::NormalizationBuffers empty_nb;
-    measure("normalization prepare empty",[&]{return p::normalization_factors(empty,dt,automatic,empty_nb);});
-    measure("normalize empty",[&]{return p::normalize_into(empty,dt,empty_out,dt,automatic,empty_nb);});
-    measure("log empty",[&]{return p::log1p_into(empty,dt,empty_out,dt);});
+    expect(bool(measure("normalization prepare empty",[&]{return p::normalization_factors(empty,automatic,empty_nb);})),"normalization prepare empty");
+    expect(bool(measure("normalize empty",[&]{return p::normalize_into(empty,empty_out,automatic,empty_nb);})),"normalize empty");
+    expect(bool(measure("log empty",[&]{return p::log1p_into(empty,empty_out);})),"log empty");
     for (int i=0;i<2;++i) {
-        expect(bool(measure("normalize dense",[&]{return p::normalize_into(dense,dt,output,dt,no,nb);})),"normalize dense");
-        expect(bool(measure("normalize csr to dense",[&]{return p::normalize_into(sparse,dt,csr,output,dt,no,nb);})),"normalize csr to dense");
-        expect(bool(measure("normalize csr",[&]{return p::normalize_into(sparse,dt,csr,sparse_out,dt,csr,no,nb);})),"normalize csr");
-        expect(bool(measure("log dense",[&]{return p::log1p_into(dense,dt,output,dt);})),"log dense");
-        expect(bool(measure("log csr to dense",[&]{return p::log1p_into(sparse,dt,csr,output,dt);})),"log csr to dense");
-        expect(bool(measure("log csr",[&]{return p::log1p_into(sparse,dt,csr,sparse_out,dt,csr);})),"log csr");
+        expect(bool(measure("normalize dense",[&]{return p::normalize_into(dense,output,no,nb);})),"normalize dense");
+        expect(bool(measure("normalize csr to dense",[&]{return p::normalize_into(sparse,output,no,nb);})),"normalize csr to dense");
+        expect(bool(measure("normalize csr",[&]{return p::normalize_into(sparse,sparse_out,no,nb);})),"normalize csr");
+        expect(bool(measure("log dense",[&]{return p::log1p_into(dense,output);})),"log dense");
+        expect(bool(measure("log csr to dense",[&]{return p::log1p_into(sparse,output);})),"log csr to dense");
+        expect(bool(measure("log csr",[&]{return p::log1p_into(sparse,sparse_out);})),"log csr");
     }
     auto trusted_no=no; trusted_no.trusted=true;
-    expect(bool(measure("trusted normalization prepare",[&]{return p::normalization_factors(dense,dt,trusted_no,nb);})),"trusted normalization prepare");
-    expect(bool(measure("trusted normalize",[&]{return p::normalize_into(dense,dt,output,dt,trusted_no,nb);})),"trusted normalize");
-    expect(bool(measure("apply normalization",[&]{return p::apply_normalization(dense,dt,output,dt,factors,4);})),"apply normalization");
-    expect(bool(measure("trusted apply normalization",[&]{return p::apply_normalization(dense,dt,output,dt,factors,4,true);})),"trusted apply normalization");
-    expect(bool(measure("apply normalization csr dense",[&]{return p::apply_normalization(sparse,dt,csr,output,dt,factors,4);})),"apply normalization csr dense");
-    expect(bool(measure("apply normalization csr",[&]{return p::apply_normalization(sparse,dt,csr,sparse_out,dt,csr,factors,4);})),"apply normalization csr");
-    expect(bool(measure("trusted log",[&]{return p::log1p_into(dense,dt,output,dt,0,true);})),"trusted log");
-    double prior = tv.values()[0];
-    auto wrong = measure("wrong sparse orientation",[&]{return p::normalize_into(sparse,dt,csr,sparse_out,dt,a::Layout::csc,no,nb);});
-    expect(!bool(wrong) && tv.values()[0] == prior,"wrong sparse orientation preflight");
-    expect(!bool(measure("log invalid base",[&]{return p::log1p_into(dense,dt,output,dt,1);})),"log invalid base");
+    expect(bool(measure("trusted normalization prepare",[&]{return p::normalization_factors(dense,trusted_no,nb);})),"trusted normalization prepare");
+    expect(bool(measure("trusted normalize",[&]{return p::normalize_into(dense,output,trusted_no,nb);})),"trusted normalize");
+    expect(bool(measure("apply normalization",[&]{return p::apply_normalization(dense,output,factors,4);})),"apply normalization");
+    expect(bool(measure("trusted apply normalization",[&]{return p::apply_normalization(dense,output,factors,4,true);})),"trusted apply normalization");
+    expect(bool(measure("apply normalization csr dense",[&]{return p::apply_normalization(sparse,output,factors,4);})),"apply normalization csr dense");
+    expect(bool(measure("apply normalization csr",[&]{return p::apply_normalization(sparse,sparse_out,factors,4);})),"apply normalization csr");
+    expect(bool(measure("trusted log",[&]{return p::log1p_into(dense,output,0,true);})),"trusted log");
+    double prior = result[0];
+    auto transposed_output=sparse_out;
+    transposed_output.structure.axis=CompressedAxis::column;
+    auto wrong = measure("wrong sparse orientation",[&]{return p::normalize_into(sparse,transposed_output,no,nb);});
+    expect(!bool(wrong) && result[0] == prior,"wrong sparse orientation preflight");
+    expect(!bool(measure("log invalid base",[&]{return p::log1p_into(dense,output,1);})),"log invalid base");
     p::ScaleOptions sco;
-    measure("scale empty",[&]{return p::scale_into(empty,dt,empty_out,dt,sco,nullptr,nullptr,0,nullptr,0);});
-    expect(bool(measure("scale dense",[&]{return p::scale_into(dense,dt,output,dt,sco,mean,scales,4,counts,4);})),"scale dense");
-    expect(bool(measure("scale csr dense",[&]{return p::scale_into(sparse,dt,csr,output,dt,sco,mean,scales,4,counts,4);})),"scale csr dense");
+    expect(bool(measure("scale empty",[&]{return p::scale_into(empty,empty_out,sco,nullptr,nullptr,0,nullptr,0);})),"scale empty");
+    expect(bool(measure("scale dense",[&]{return p::scale_into(dense,output,sco,mean,scales,4,counts,4);})),"scale dense");
+    expect(bool(measure("scale csr dense",[&]{return p::scale_into(sparse,output,sco,mean,scales,4,counts,4);})),"scale csr dense");
     sco.zero_center=false;
-    expect(bool(measure("scale csr",[&]{return p::scale_into(sparse,dt,csr,sparse_out,dt,csr,sco,mean,scales,4,counts,4);})),"scale csr");
-    expect(bool(measure("apply scale",[&]{return p::apply_scale(dense,dt,output,dt,sco,mean,scales,4);})),"apply scale");
-    expect(bool(measure("apply scale csr dense",[&]{return p::apply_scale(sparse,dt,csr,output,dt,sco,mean,scales,4);})),"apply scale csr dense");
-    expect(bool(measure("apply scale csr",[&]{return p::apply_scale(sparse,dt,csr,sparse_out,dt,csr,sco,mean,scales,4);})),"apply scale csr");
+    expect(bool(measure("scale csr",[&]{return p::scale_into(sparse,sparse_out,sco,mean,scales,4,counts,4);})),"scale csr");
+    expect(bool(measure("apply scale",[&]{return p::apply_scale(dense,output,sco,mean,scales,4);})),"apply scale");
+    expect(bool(measure("apply scale csr dense",[&]{return p::apply_scale(sparse,output,sco,mean,scales,4);})),"apply scale csr dense");
+    expect(bool(measure("apply scale csr",[&]{return p::apply_scale(sparse,sparse_out,sco,mean,scales,4);})),"apply scale csr");
     auto trusted_scale=sco; trusted_scale.trusted=true;
-    expect(bool(measure("trusted scale",[&]{return p::scale_into(dense,dt,output,dt,trusted_scale,mean,scales,4,counts,4);})),"trusted scale");
-    expect(!bool(measure("scale capacity",[&]{return p::scale_into(dense,dt,output,dt,sco,mean,scales,0,counts,4);})),"scale capacity");
+    expect(bool(measure("trusted scale",[&]{return p::scale_into(dense,output,trusted_scale,mean,scales,4,counts,4);})),"trusted scale");
+    expect(!bool(measure("scale capacity",[&]{return p::scale_into(dense,output,sco,mean,scales,0,counts,4);})),"scale capacity");
 
     size_t total = 0;
     auto custom = [&](size_t first, size_t count) { total += first + count; };
@@ -229,16 +242,16 @@ int main() {
     mh=measure("hvg moments clear 2",[&]{return p::hvg_moments_clear(4,1,moments2);}); expect(mh.code==p::HvgCode::ok,"hvg moments clear 2");
     auto short_moments=moments1; short_moments.capacity=0;
     mh=measure("hvg moments capacity",[&]{return p::hvg_moments_clear(4,1,short_moments);}); expect(mh.code!=p::HvgCode::ok,"hvg moments capacity");
-    mh=measure("hvg accumulate dense",[&]{return p::hvg_accumulate_dense(values,dt,4,4,4*sizeof(double),sizeof(double),nullptr,1,ho,moments1);}); expect(mh.code==p::HvgCode::ok,"hvg accumulate dense");
-    mh=measure("hvg accumulate csr",[&]{return p::hvg_accumulate_sparse(sv.values(),dt,si,so,4,8,csr,4,4,16,nullptr,1,ho,moments2);}); expect(mh.code==p::HvgCode::ok,"hvg accumulate csr");
+    mh=measure("hvg accumulate dense",[&]{return p::hvg_accumulate_dense(dense,nullptr,1,ho,moments1);}); expect(mh.code==p::HvgCode::ok,"hvg accumulate dense");
+    mh=measure("hvg accumulate csr",[&]{return p::hvg_accumulate_sparse(sparse,nullptr,1,ho,moments2);}); expect(mh.code==p::HvgCode::ok,"hvg accumulate csr");
     mh=measure("hvg merge",[&]{return p::hvg_moments_merge(4,1,moments1,moments2);}); expect(mh.code==p::HvgCode::ok,"hvg merge");
     mh=measure("hvg score size",[&]{return p::hvg_score_scratch_bytes(4,ho,needed);}); expect(mh.code==p::HvgCode::ok && needed<=sizeof(work),"hvg score size");
     mh=measure("hvg score capacity",[&]{return p::hvg_score(moments1,4,1,ho,hout,work,0);}); expect(mh.code!=p::HvgCode::ok,"hvg score capacity");
     for (int i=0;i<2;++i) {
         mh=measure("hvg score",[&]{return p::hvg_score(moments1,4,1,ho,hout,work,sizeof(work));}); expect(mh.code==p::HvgCode::ok,"hvg score");
         mh=measure("hvg score unchecked",[&]{return p::hvg_score_unchecked(moments1,4,1,ho,hout,work,sizeof(work));}); expect(mh.code==p::HvgCode::ok,"hvg score unchecked");
-        mh=measure("hvg accumulate dense unchecked",[&]{return p::hvg_accumulate_dense_unchecked(values,dt,4,4,4*sizeof(double),sizeof(double),nullptr,1,ho,moments1);}); expect(mh.code==p::HvgCode::ok,"hvg accumulate dense unchecked");
-        mh=measure("hvg accumulate csr unchecked",[&]{return p::hvg_accumulate_sparse_unchecked(sv.values(),dt,si,so,4,8,csr,4,4,16,nullptr,1,ho,moments2);}); expect(mh.code==p::HvgCode::ok,"hvg accumulate csr unchecked");
+        mh=measure("hvg accumulate dense unchecked",[&]{return p::hvg_accumulate_dense_unchecked(dense,nullptr,1,ho,moments1);}); expect(mh.code==p::HvgCode::ok,"hvg accumulate dense unchecked");
+        mh=measure("hvg accumulate csr unchecked",[&]{return p::hvg_accumulate_sparse_unchecked(sparse,nullptr,1,ho,moments2);}); expect(mh.code==p::HvgCode::ok,"hvg accumulate csr unchecked");
     }
     auto hq=measure("hvg size",[&]{return p::hvg_scratch_bytes(4,1,ho,needed);});
     expect(hq.code==p::HvgCode::ok && needed<=sizeof(work),"hvg size");
@@ -246,28 +259,31 @@ int main() {
     hq=measure("hvg size repeated",[&]{return p::hvg_scratch_bytes(4,1,ho,needed);});
     expect(hq.code==p::HvgCode::ok,"hvg size repeated");
     for (int i=0;i<2;++i) {
-        auto h=measure("hvg dense",[&]{return p::hvg_dense(values,dt,4,4,4*sizeof(double),sizeof(double),nullptr,1,ho,hout,work,sizeof(work));});
+        auto h=measure("hvg dense",[&]{return p::hvg_dense(dense,nullptr,1,ho,hout,work,sizeof(work));});
         expect(h.code==p::HvgCode::ok,"hvg dense");
-        h=measure("hvg csr",[&]{return p::hvg_sparse(sv.values(),dt,si,so,sizeof(int32_t),sizeof(int64_t),csr,4,4,16,nullptr,1,ho,hout,work,sizeof(work));});
+        h=measure("hvg csr",[&]{return p::hvg_sparse(sparse,nullptr,1,ho,hout,work,sizeof(work));});
         expect(h.code==p::HvgCode::ok,"hvg csr");
-        h=measure("hvg dense unchecked",[&]{return p::hvg_dense_unchecked(values,dt,4,4,4*sizeof(double),sizeof(double),nullptr,1,ho,hout,work,sizeof(work));});
+        h=measure("hvg dense unchecked",[&]{return p::hvg_dense_unchecked(dense,nullptr,1,ho,hout,work,sizeof(work));});
         expect(h.code==p::HvgCode::ok,"hvg dense unchecked");
-        h=measure("hvg csr unchecked",[&]{return p::hvg_sparse_unchecked(sv.values(),dt,si,so,sizeof(int32_t),sizeof(int64_t),csr,4,4,16,nullptr,1,ho,hout,work,sizeof(work));});
+        h=measure("hvg csr unchecked",[&]{return p::hvg_sparse_unchecked(sparse,nullptr,1,ho,hout,work,sizeof(work));});
         expect(h.code==p::HvgCode::ok,"hvg csr unchecked");
     }
-    auto h=measure("hvg capacity",[&]{return p::hvg_dense(values,dt,4,4,4*sizeof(double),sizeof(double),nullptr,1,ho,hout,work,0);});
+    auto h=measure("hvg capacity",[&]{return p::hvg_dense(dense,nullptr,1,ho,hout,work,0);});
     expect(h.code!=p::HvgCode::ok,"hvg capacity");
     size_t batch[4]{0,1,0,1}; auto batched=ho; batched.batched=true;
     h=measure("hvg batched size",[&]{return p::hvg_scratch_bytes(4,2,batched,needed);}); expect(h.code==p::HvgCode::ok && needed<=sizeof(work),"hvg batched size");
-    h=measure("hvg batched",[&]{return p::hvg_dense(values,dt,4,4,4*sizeof(double),sizeof(double),batch,2,batched,hout,work,sizeof(work));}); expect(h.code==p::HvgCode::ok,"hvg batched");
+    h=measure("hvg batched",[&]{return p::hvg_dense(dense,batch,2,batched,hout,work,sizeof(work));}); expect(h.code==p::HvgCode::ok,"hvg batched");
     size_t order[4]{};
     for (int i=0;i<2;++i) {
         h=measure("hvg rank",[&]{return p::hvg_rank_batched(hn,hb,4,2,hs,order,4);}); expect(h.code==p::HvgCode::ok,"hvg rank");
     }
     h=measure("hvg rank capacity",[&]{return p::hvg_rank_batched(hn,hb,4,2,hs,order,0);}); expect(h.code==p::HvgCode::insufficient_capacity,"hvg rank capacity");
     measure("hvg rank empty",[&]{return p::hvg_rank_batched(nullptr,nullptr,0,0,nullptr,nullptr,0);});
-    measure("hvg sparse invalid layout",[&]{return p::hvg_sparse(sv.values(),dt,si,so,4,8,a::Layout::dense,4,4,16,nullptr,1,ho,hout,work,sizeof(work));});
-    measure("hvg empty",[&]{return p::hvg_dense(nullptr,dt,0,0,0,0,nullptr,1,ho,hout,nullptr,0);});
+    auto invalid_sparse=sparse;
+    invalid_sparse.structure.axis=static_cast<CompressedAxis>(255);
+    auto bad_layout=measure("hvg sparse invalid layout",[&]{return p::hvg_sparse(invalid_sparse,nullptr,1,ho,hout,work,sizeof(work));});
+    expect(bad_layout.code==p::HvgCode::invalid_argument,"hvg sparse invalid layout");
+    measure("hvg empty",[&]{return p::hvg_dense(empty,nullptr,1,ho,hout,nullptr,0);});
     return failures ? 1 : 0;
 }
 #else

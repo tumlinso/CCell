@@ -42,9 +42,9 @@ See the [pinned Scanpy 1.11.5 source](https://github.com/scverse/scanpy/tree/1.1
 
 ## Bundled AnnData++
 
-AnnData++ is CCell's data and IO component, retained as an independently
-maintained Git submodule. Its license is reproduced below and in
-`src/io/anndatapp/LICENSE`.
+AnnData++ provides array storage and file I/O. The standard Cellerator
+distribution bundles this independently maintained Git submodule. Its license
+is reproduced below and in `extern/anndatapp/LICENSE` at the Cellerator root.
 
 MIT License
 
@@ -71,7 +71,7 @@ SOFTWARE.
 ## Bundled Velocity++
 
 The standalone component retains its own third-party notices in
-`external/velocitypp/THIRD_PARTY_NOTICES.md`. They are reproduced below.
+`src/velocity/THIRD_PARTY_NOTICES.md`. They are reproduced below.
 
 The numerical methods and independent reference qualification use scVelo's
 published implementation, pinned in the qualification evidence. scVelo is
@@ -110,5 +110,5 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ### AnnData++
 
-AnnData++ is a required, separately installed dependency. Its distribution
-includes its MIT license; the dependency installation retains that notice.
+The bundled AnnData++ distribution includes its MIT license. Its installation
+retains that notice.

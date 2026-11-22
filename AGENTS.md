@@ -1,57 +1,31 @@
 # Working on CCell
 
-CCell owns a C++20 reference biology package, its scientific methods, and
-biological data integration. AnnData++ is CCell's data and IO component,
-maintained as an independent Git submodule under src/io/anndatapp. Velocity++
-remains a standalone Git submodule under external/velocitypp; preprocessing is
-local CCell source under src/preprocess.
+CCell owns single-cell preprocessing and RNA velocity. Follow the root
+[protected C++ coding style](../../coding_style.md). Use the [CCell build and API
+guide](README.md) for source routes, installed targets, and import examples.
 
-Cellerator is the reusable computation substrate and an approved normal
-dependency for CCell objects, interfaces, and implementations. CCell owns its
-scientific methods and their integration with that substrate. Compose its
-public owners, buffers, views, layouts, and prepared operations; keep reusable
-computational machinery in Cellerator. Approval of that dependency does not
-claim that this checkout already links it or provides acceleration.
+- Put reusable layouts, views, and mathematical primitives with their existing
+  Cellerator owners. Keep scientific method behavior in `src/preprocess/` or
+  `src/velocity/`. Keep data acquisition and translation with the optional
+  AnnData++ adapter in `src/ccell.interop.anndata.cppm`.
+- Numerical code accepts Cellerator's typed dense and compressed views. Dense
+  strides count elements and can be signed. Sparse views carry CSR or CSC
+  orientation and independently typed indices and offsets. Treat observation
+  and feature ordering as part of each input contract.
+- Use `import anndata;` for AnnData++ I/O and `import ccell.interop.anndata;` for
+  checked borrowing. Within an adapter implementation, use
+  `namespace anndata = ::anndatapp;` locally when it makes code clearer. Build
+  and package names remain `anndatapp` and `anndatapp::anndatapp`.
+- Borrowed views do not extend storage lifetimes. Retain owners through all
+  numerical reads, including reads from prepared Velocity inputs. Callers
+  provide output, preparation storage, scratch, and synchronization. Keep any
+  copying, conversion, materialization, and allocation explicit. Numerical
+  methods reuse sufficient storage without allocation.
+- Keep public module interfaces focused and compiled implementation details
+  private. Test native method code with AnnData++ disabled. Test changes to the
+  adapter using the standard build and an installed consumer.
 
-Read [coding_style.md](coding_style.md) before numerical design, implementation,
-or review. It is binding authority: do not weaken, replace, move, or remove it,
-or its protection here, without explicit user authorization. The standard
-reference allocates nothing; callers supply all outputs, preparation, and scratch.
-Explicit provisioning through Cellerator resource operations may allocate and
-retain storage. Reuse sufficient capacity; repeated numerical execution must
-allocate nothing, including metadata and ownership bookkeeping. Consumer
-replacements expose their allocation and complete costs. All authored shipped
-native code and examples use direct calculations, minimal scalar headers and
-compiler builtins, without STL machinery. Cellerator public abstractions are
-permitted under their own equally strict authority, not as a way to conceal
-prohibited machinery in CCell helpers.
-
-Public imports are `ccell`, `ccell.anndata`, `ccell.preprocess`, and
-`ccell.velocity`. Re-export the existing component modules and preserve
-their type identity. AnnData++ owns biological data/IO and its acquired array
-descriptors; Cellerator owns reusable computation storage and execution types.
-Preserve the lifetime and layout contract of each; do not duplicate generic
-storage machinery in CCell. Keep numerical operations and costs explicit.
-Keep implementation-only changes out of public module interfaces.
-
-Run `python3 tools/check_native_style.py` and the registered checker fixtures
-for changes to native source or its checker. Mechanical checks do not establish
-compactness, indirect allocation, or unnecessary work: review the affected
-calculation and helpers. Existing noncompliant code is not precedent; new and
-reworked code must comply without making an unrelated repository-wide cleanup
-a prerequisite. Preserve the parallel implementation work.
-
-Use the debug preset with Clang 18, matching clang-scan-deps, CMake >=3.28,
-and Ninja: configure, build, then run CTest. It checks composition through
-the umbrella and individual module imports and through an installed package.
-The same root build owns preprocessing's numerical tests and packaging; do
-not recreate standalone preprocess build or package metadata. Its license
-and third-party notices live at the repository root. Velocity++ numerical
-changes also require its standalone checks. Historical qualification records
-are not current-source evidence.
-
-Preserve concurrent and unknown work, staged changes, submodule histories,
-scientific fixtures, and historical receipts. Do not reset or clean work,
-delete remote repositories, or rewrite workflow authority. Use configured
-Codex subagents for useful independent work, with explicit file ownership;
-keep intent, integration, and acceptance with the root.
+Keep the original source and qualification records attributable. The imported
+[CCell style record](coding_style.md) and Velocity's historical evidence retain
+their original context. Follow their recorded precision and scientific
+contracts, and use local tests to verify the moved source.

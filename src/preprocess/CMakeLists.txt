@@ -5,16 +5,19 @@ set_target_properties(ccell_preprocess PROPERTIES
   EXPORT_NAME preprocess_binary)
 target_compile_features(ccell_preprocess PUBLIC cxx_std_20)
 target_sources(ccell_preprocess
-  PUBLIC FILE_SET CXX_MODULES BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}"
-    FILES preprocess.cppm qc.cppm hvg.cppm
+  PUBLIC FILE_SET CXX_MODULES BASE_DIRS "${ccell_SOURCE_DIR}/src"
+    FILES preprocess.cppm qc.cppm hvg.cppm "${ccell_SOURCE_DIR}/src/ccell.preprocess.cppm"
   PRIVATE preprocess.cpp qc.cpp hvg.cpp)
-target_link_libraries(ccell_preprocess PUBLIC anndatapp::anndatapp)
+target_include_directories(ccell_preprocess PUBLIC
+  $<BUILD_INTERFACE:${ccell_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+target_link_libraries(ccell_preprocess PUBLIC Cellerator::headers)
 target_compile_options(ccell_preprocess PRIVATE -Wall -Wextra -Wpedantic)
 
-install(TARGETS ccell_preprocess EXPORT ccellTargets
-  FILE_SET CXX_MODULES DESTINATION ${CMAKE_INSTALL_DATADIR}/ccell/preprocess/modules
-  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+install(TARGETS ccell_preprocess EXPORT ccellMethodTargets
+  FILE_SET CXX_MODULES DESTINATION "${CCELL_INSTALL_MODULE_DIR}"
+  ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+  LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}")
 
 if(CCELL_BUILD_TESTS)
   foreach(suite IN ITEMS numerics hvg dispatch transform)
@@ -38,8 +41,10 @@ if(CCELL_BUILD_TESTS)
 endif()
 
 if(CCELL_BUILD_QUALIFICATION)
-  add_executable(ccell_preprocess_interop_driver ${PROJECT_SOURCE_DIR}/tests/preprocess/interop_driver.cpp)
-  target_link_libraries(ccell_preprocess_interop_driver PRIVATE ccell::preprocess)
+  if(CELLERATOR_ENABLE_CCELL_ANNDATA)
+    add_executable(ccell_preprocess_interop_driver ${PROJECT_SOURCE_DIR}/tests/preprocess/interop_driver.cpp)
+    target_link_libraries(ccell_preprocess_interop_driver PRIVATE ccell::preprocess ccell::anndata_interop)
+  endif()
   add_executable(ccell_preprocess_benchmark ${PROJECT_SOURCE_DIR}/benchmarks/preprocess/qualification.cpp)
   target_link_libraries(ccell_preprocess_benchmark PRIVATE ccell::preprocess)
 endif()
